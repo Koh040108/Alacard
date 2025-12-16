@@ -4,7 +4,7 @@ AlaCard is a hackathon-ready solution for verifying citizen subsidy eligibility 
 
 ## 🚀 Features
 
-- **Privacy**: No personal data (IC, Name, Income) is stored in the token or shared with the terminal.
+- **Privacy**: No personal data (IC, Name, Income) is stored in the token or shared with the terminal. 
 - **Security**: 
   - **PKI**: Tokens are signed by the Government Issuer.
   - **Wallet Binding**: Tokens are bound to the user's wallet private key.
