@@ -1,0 +1,13 @@
+{
+    "name": "alacard",
+    "version": "1.0.0",
+    "description": "Privacy-Preserving Eligibility Verification System",
+    "scripts": {
+        "install:all": "cd backend && npm install && cd ../frontend && npm install",
+        "backend": "cd backend && npm start",
+        "frontend": "cd frontend && npm run dev",
+        "seed": "curl -X POST http://localhost:3000/seed"
+    },
+    "author": "",
+    "license": "ISC"
+}
