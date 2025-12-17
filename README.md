@@ -108,5 +108,140 @@ npm run frontend
 2. **Wallet Binding**: The token contains the User's Public Key. The Proof must contain a signature of the Nonce by the corresponding Private Key. This prevents token theft/cloning (unless the private key is stolen).
 3. **Audit Chain**: `current_hash = SHA256(prev_hash + data)`. modification of logs allows detection.
 
+## 🔑 Cryptographic Core
+
+The system uses **ECDSA P-256 (ES256)** with **SHA-256** for all cryptographic operations.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    GOVERNMENT ISSUER                            │
+│  ┌───────────────┐     ┌───────────────┐                       │
+│  │ Issuer Keys   │────▶│ Sign Token    │                       │
+│  │ (P-256)       │     │ (ECDSA)       │                       │
+│  └───────────────┘     └───────┬───────┘                       │
+└────────────────────────────────┼────────────────────────────────┘
+                                 │ Token (signed)
+                                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    CITIZEN WALLET                               │
+│  ┌───────────────┐     ┌───────────────┐     ┌───────────────┐ │
+│  │ Wallet Keys   │     │ Store Token   │     │ Generate      │ │
+│  │ (P-256)       │────▶│ (bound to     │────▶│ Proof         │ │
+│  └───────────────┘     │ wallet key)   │     │ (signs nonce) │ │
+│                        └───────────────┘     └───────┬───────┘ │
+└──────────────────────────────────────────────────────┼──────────┘
+                                                       │ Proof
+                                                       ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    VERIFICATION TERMINAL                        │
+│  ┌───────────────┐     ┌───────────────┐     ┌───────────────┐ │
+│  │ Generate      │     │ Verify        │     │ Verify        │ │
+│  │ Nonce         │────▶│ Token Sig     │────▶│ Proof Sig     │ │
+│  │ (challenge)   │     │ (issuer key)  │     │ (wallet key)  │ │
+│  └───────────────┘     └───────────────┘     └───────┬───────┘ │
+│                                                      │         │
+│                                              ┌───────▼───────┐ │
+│                                              │ ELIGIBLE/NOT  │ │
+│                                              └───────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Crypto Modules
+
+| Module | Location | Purpose |
+|--------|----------|---------|
+| `utils.js` | `backend/crypto/` | Base64URL, SHA-256, nonces, constant-time comparison |
+| `keys.js` | `backend/crypto/` | P-256 key generation, import/export (PEM, JWK, raw) |
+| `token.js` | `backend/crypto/` | Token creation, signing, verification |
+| `proof.js` | `backend/crypto/` | Challenge-response, nonce management |
+| `tests.js` | `backend/crypto/` | Security test suite |
+
+### 🧪 Run Crypto Tests
+
+To verify the cryptographic implementation:
+
+```bash
+cd backend
+node crypto/tests.js
+```
+
+**Expected output:**
+```
+============================================================
+AlaCard Security Tests
+============================================================
+
+🔑 Generated test keys...
+
+--- Basic Functionality ---
+✅ PASS: Token creation succeeds with valid inputs
+✅ PASS: Token verification succeeds with valid token
+✅ PASS: Challenge generation produces unique nonces
+✅ PASS: Proof generation and verification succeeds
+
+--- Attack Prevention Tests ---
+✅ PASS: ATTACK: Token tampering is detected
+✅ PASS: ATTACK: Proof replay is detected (same nonce)
+✅ PASS: ATTACK: Proof with wrong nonce is rejected
+✅ PASS: ATTACK: Stolen token cannot be used without wallet key
+✅ PASS: ATTACK: Forged token with wrong issuer key is rejected
+✅ PASS: ATTACK: Expired token is rejected
+✅ PASS: ATTACK: Algorithm confusion is prevented
+✅ PASS: ATTACK: Wallet binding is enforced
+✅ PASS: ATTACK: Invalid signature length is rejected
+
+--- Privacy Tests ---
+✅ PASS: Token does not contain IC number
+✅ PASS: Proof does not reveal token contents to eavesdropper
+
+--- Cryptographic Properties ---
+✅ PASS: Key generation produces unique keys
+✅ PASS: Nonces have sufficient entropy
+✅ PASS: Token hashes are deterministic
+✅ PASS: Different tokens produce different hashes
+✅ PASS: Constant-time comparison prevents timing attacks
+
+============================================================
+Tests Complete: 20 passed, 0 failed
+============================================================
+```
+
+### Security Properties Tested
+
+| Attack | Protection |
+|--------|------------|
+| Token Tampering | Signature verification fails |
+| Replay Attack | Single-use nonces with expiry |
+| Stolen Token | Requires wallet private key |
+| Forged Token | Only issuer can sign |
+| Expired Token | Expiry timestamp enforced |
+| Algorithm Confusion | Only ES256 accepted |
+
+### Token Format
+
+```
+BASE64URL(header).BASE64URL(payload).BASE64URL(signature)
+```
+
+**Header:**
+```json
+{ "alg": "ES256", "typ": "ELIGIBILITY", "ver": "1" }
+```
+
+**Payload (NO PII):**
+```json
+{
+  "elig": true,           // Eligibility status
+  "wbind": "abc123...",   // SHA-256 hash of wallet public key
+  "wpub": "BExy...",      // Wallet public key (raw, Base64URL)
+  "iss": "GOV_ISSUER",    // Issuer ID
+  "iat": 1702800000,      // Issued at (Unix timestamp)
+  "exp": 1705392000,      // Expires at (Unix timestamp)
+  "jti": "uuid-..."       // Unique token ID
+}
+```
+
 ---
 *Built for Hackathon 2025*
