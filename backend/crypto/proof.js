@@ -76,14 +76,14 @@ function generateChallenge(terminalId) {
     if (typeof terminalId !== 'string' || terminalId.length === 0) {
         throw new Error('terminalId must be a non-empty string');
     }
-    
+
     const challenge = {
         nonce: generateNonce(32),
         timestamp: now(),
         terminalId: terminalId,
         expiresAt: now() + NONCE_VALIDITY_SECONDS,
     };
-    
+
     return challenge;
 }
 
@@ -101,11 +101,11 @@ function isChallengeValid(challenge) {
     if (!challenge || typeof challenge !== 'object') {
         return false;
     }
-    
+
     if (!challenge.nonce || !challenge.expiresAt) {
         return false;
     }
-    
+
     return !isExpired(challenge.expiresAt);
 }
 
@@ -142,67 +142,67 @@ function generateProof({ token, nonce, walletPrivateKey }) {
     // ==========================================================================
     // INPUT VALIDATION
     // ==========================================================================
-    
+
     if (typeof token !== 'string' || token.length === 0) {
         throw new Error('token must be a non-empty string');
     }
-    
+
     if (typeof nonce !== 'string' || nonce.length === 0) {
         throw new Error('nonce must be a non-empty string');
     }
-    
+
     if (!isValidP256PrivateKey(walletPrivateKey)) {
         throw new Error('walletPrivateKey must be a valid P-256 private key');
     }
-    
+
     // ==========================================================================
     // BUILD PROOF MESSAGE
     // The message binds the nonce to this specific token
     // ==========================================================================
-    
+
     const tokenHash = hashToken(token);
-    
+
     // Message format: nonce || tokenHash
     // Why include tokenHash? Binds this proof to this specific token
     // Prevents using same signature with a different token
     const message = `${nonce}.${tokenHash}`;
-    
+
     // ==========================================================================
     // SIGN PROOF
     // ==========================================================================
-    
+
     const signature = crypto.sign(
         'sha256',
         Buffer.from(message, 'utf8'),
         walletPrivateKey
     );
-    
+
     // Convert to raw signature format
     const rawSignature = derToRawSignature(signature);
-    
+
     // ==========================================================================
     // BUILD PROOF OBJECT
     // ==========================================================================
-    
+
     const proof = {
         version: PROOF_VERSION,
-        
+
         // The token (contains eligibility claim)
         token: token,
-        
+
         // The challenge nonce (proves freshness)
         nonce: nonce,
-        
+
         // Hash of token (for quick lookup/audit)
         tokenHash: tokenHash,
-        
+
         // Signature proving wallet ownership
         signature: base64UrlEncode(rawSignature),
-        
+
         // Timestamp of proof generation
         timestamp: now(),
     };
-    
+
     return proof;
 }
 
@@ -252,134 +252,124 @@ function deserializeProof(serialized) {
 function verifyProof({ proof, challenge, issuerPublicKey }) {
     // ==========================================================================
     // PROOF STRUCTURE VALIDATION
-    // Why: Reject malformed proofs before any crypto operations
     // ==========================================================================
-    
+
     if (!proof || typeof proof !== 'object') {
         return { valid: false, error: 'Proof must be an object' };
     }
-    
-    const requiredFields = ['version', 'token', 'nonce', 'tokenHash', 'signature'];
-    for (const field of requiredFields) {
-        if (!proof[field]) {
-            return { valid: false, error: `Proof missing required field: ${field}` };
-        }
+
+    // Map Short Keys to Logical Names
+    const pToken = proof.t || proof.token;
+    const pNonce = proof.n || proof.nonce;
+    const pSig = proof.s || proof.signature;
+    const pVer = proof.v || proof.version;
+
+    if (!pToken || !pNonce || !pSig) {
+        return { valid: false, error: 'Proof missing required fields (t, n, s)' };
     }
-    
+
     // ==========================================================================
     // NONCE VALIDATION
-    // Why: Prevents replay attacks
-    // An attacker cannot reuse a captured proof with a different nonce
     // ==========================================================================
-    
-    if (!challenge || typeof challenge !== 'object') {
-        return { valid: false, error: 'Challenge must be an object' };
+
+
+    // CASE A: Active Challenge (Terminal generated a nonce)
+    if (challenge) {
+        if (pNonce !== challenge.nonce) {
+            return { valid: false, error: 'Nonce mismatch' };
+        }
+        if (!isChallengeValid(challenge)) {
+            return { valid: false, error: 'Challenge expired' };
+        }
     }
-    
-    // Check nonce matches
-    if (proof.nonce !== challenge.nonce) {
-        return { 
-            valid: false, 
-            error: 'Nonce mismatch: proof was generated for a different challenge' 
-        };
+    // CASE B: Passive Verification (Time-based nonce)
+    else {
+        // Nonce must be a valid timestamp (integer string)
+        const proofTime = parseInt(pNonce);
+        if (isNaN(proofTime)) {
+            return { valid: false, error: 'Invalid nonce for passive verification' };
+        }
+
+        const currentTime = now();
+        // Allow 60 seconds drift/window (Supporting 30s refresh interval)
+        if (Math.abs(currentTime - proofTime) > 60) {
+            return { valid: false, error: 'Proof expired (timestamp outside 60s window)' };
+        }
     }
-    
-    // Check challenge hasn't expired
-    // Why? Limits time window for man-in-the-middle attacks
-    if (!isChallengeValid(challenge)) {
-        return { valid: false, error: 'Challenge has expired' };
-    }
-    
+
     // ==========================================================================
     // TOKEN VERIFICATION
-    // Why: Ensures token was actually signed by the government
-    // This is the trust anchor of the entire system
     // ==========================================================================
-    
-    const tokenResult = verifyToken(proof.token, issuerPublicKey);
-    
+
+    const tokenResult = verifyToken(pToken, issuerPublicKey);
+
     if (!tokenResult.valid) {
-        return { 
-            valid: false, 
-            error: `Token verification failed: ${tokenResult.error}` 
+        return {
+            valid: false,
+            error: `Token verification failed: ${tokenResult.error}`
         };
     }
-    
-    // Verify tokenHash matches
-    // Why? Ensures proof is bound to this specific token
-    const expectedTokenHash = hashToken(proof.token);
-    if (proof.tokenHash !== expectedTokenHash) {
-        return { valid: false, error: 'Token hash mismatch' };
-    }
-    
+
+    // Compute tokenHash (Verifier MUST compute this to verify signature)
+    const computedTokenHash = hashToken(pToken);
+
     // ==========================================================================
     // EXTRACT WALLET PUBLIC KEY
-    // Why: Need to verify the wallet signature
-    // The public key is embedded in the token (bound at issuance)
     // ==========================================================================
-    
+
     let walletPublicKey;
     try {
         walletPublicKey = importPublicKeyRaw(tokenResult.payload.wpub);
     } catch (e) {
         return { valid: false, error: `Invalid wallet public key in token: ${e.message}` };
     }
-    
+
     // ==========================================================================
     // WALLET SIGNATURE VERIFICATION
-    // Why: Proves the proof generator owns the wallet
-    // Only the wallet owner can produce a valid signature
     // ==========================================================================
-    
+
     let rawSignature;
     try {
-        rawSignature = base64UrlDecode(proof.signature);
+        rawSignature = base64UrlDecode(pSig);
     } catch (e) {
         return { valid: false, error: 'Invalid signature encoding' };
     }
-    
+
     if (rawSignature.length !== 64) {
         return { valid: false, error: 'Invalid signature length' };
     }
-    
-    // Reconstruct the signed message
-    const message = `${proof.nonce}.${proof.tokenHash}`;
-    
+
+    // Reconstruct the signed message: nonce || tokenHash
+    const message = `${pNonce}.${computedTokenHash}`;
+
     // Convert raw signature to DER for verification
     const derSignature = rawToDerSignature(rawSignature);
-    
+
     const signatureValid = crypto.verify(
         'sha256',
         Buffer.from(message, 'utf8'),
         walletPublicKey,
         derSignature
     );
-    
+
     if (!signatureValid) {
-        return { 
-            valid: false, 
-            error: 'Wallet signature verification failed: proof generator does not own wallet' 
+        return {
+            valid: false,
+            error: 'Wallet signature verification failed: proof generator does not own wallet'
         };
     }
-    
+
     // ==========================================================================
     // SUCCESS
-    // At this point we have verified:
-    // 1. Token was signed by government (issuerPublicKey)
-    // 2. Token is not expired
-    // 3. Proof was signed by wallet owner (walletPrivateKey)
-    // 4. Nonce is fresh (not a replay)
-    // 5. Proof is bound to this specific token
     // ==========================================================================
-    
+
     return {
         valid: true,
         eligible: tokenResult.payload.elig,
-        tokenHash: proof.tokenHash,
+        tokenHash: computedTokenHash,
         issuerId: tokenResult.payload.iss,
         tokenExpiry: tokenResult.payload.exp,
         verifiedAt: now(),
-        // Include wallet binding for audit
         walletBinding: tokenResult.payload.wbind,
     };
 }
@@ -405,7 +395,7 @@ class NonceStore {
         this.usedNonces = new Map();
         this.challenges = new Map();
     }
-    
+
     /**
      * Store a new challenge.
      * 
@@ -415,7 +405,7 @@ class NonceStore {
     storeChallenge(nonce, challenge) {
         this.challenges.set(nonce, challenge);
     }
-    
+
     /**
      * Get a stored challenge.
      * 
@@ -425,7 +415,7 @@ class NonceStore {
     getChallenge(nonce) {
         return this.challenges.get(nonce) || null;
     }
-    
+
     /**
      * Mark a nonce as used (consumed).
      * 
@@ -441,25 +431,25 @@ class NonceStore {
         if (this.usedNonces.has(nonce)) {
             return false;
         }
-        
+
         // Check if challenge exists
         const challenge = this.challenges.get(nonce);
         if (!challenge) {
             return false;
         }
-        
+
         // Check if expired
         if (!isChallengeValid(challenge)) {
             return false;
         }
-        
+
         // Mark as used
         this.usedNonces.set(nonce, now());
         this.challenges.delete(nonce);
-        
+
         return true;
     }
-    
+
     /**
      * Check if a nonce has been used.
      * 
@@ -469,21 +459,21 @@ class NonceStore {
     isNonceUsed(nonce) {
         return this.usedNonces.has(nonce);
     }
-    
+
     /**
      * Clean up expired entries.
      * Should be called periodically in production.
      */
     cleanup() {
         const currentTime = now();
-        
+
         // Clean expired challenges
         for (const [nonce, challenge] of this.challenges) {
             if (!isChallengeValid(challenge)) {
                 this.challenges.delete(nonce);
             }
         }
-        
+
         // Clean old used nonces (keep for 1 hour after expiry)
         const maxAge = NONCE_VALIDITY_SECONDS + 3600;
         for (const [nonce, usedAt] of this.usedNonces) {
@@ -502,16 +492,16 @@ module.exports = {
     // Challenge
     generateChallenge,
     isChallengeValid,
-    
+
     // Proof
     generateProof,
     serializeProof,
     deserializeProof,
     verifyProof,
-    
+
     // Nonce management
     NonceStore,
-    
+
     // Constants
     NONCE_VALIDITY_SECONDS,
     PROOF_VERSION,
