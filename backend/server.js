@@ -33,7 +33,11 @@ const apiLimiter = rateLimit({
 // Apply global API limiter to all routes starting with /
 app.use(apiLimiter);
 
-app.use(cors());
+app.use(cors({
+    origin: '*', // Allow all origins for the simulator demo
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(bodyParser.json());
 
 // =============================================================================
