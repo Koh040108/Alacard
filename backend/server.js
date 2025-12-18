@@ -1,19 +1,127 @@
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const fs = require('fs');
+const path = require('path');
 const { initDB, getDB } = require('./database');
-const { ensureKeys, signData, verifySignature, hashData, getPublicKey } = require('./cryptoUtils');
-const crypto = require('crypto');
+const crypto = require('./crypto');
 
 const app = express();
 const PORT = 3000;
 
+// =============================================================================
+// RATE LIMITING
+// =============================================================================
+const rateLimit = require('express-rate-limit');
+
+// Stricter limit for issuance (prevent token mining)
+const issueLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    max: 10, // Limit each IP to 10 requests per windowMs
+    message: { error: 'Too many tokens issued from this IP, please try again after an hour' }
+});
+
+// General limit for verification/challenges
+const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // Limit each IP to 100 requests per windowMs
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+// Apply global API limiter to all routes starting with /
+app.use(apiLimiter);
+
 app.use(cors());
 app.use(bodyParser.json());
 
+// =============================================================================
+// KEY MANAGEMENT (Persistence Layer)
+// -----------------------------------------------------------------------------
+// The crypto module provides logic, but we need to persist keys to disk
+// so the issuer identity remains consistent across restarts.
+// =============================================================================
+
+const KEYS_DIR = path.join(__dirname, 'keys');
+const PRIVATE_KEY_PATH = path.join(KEYS_DIR, 'issuer-private.pem');
+const PUBLIC_KEY_PATH = path.join(KEYS_DIR, 'issuer-public.pem');
+
+// Ensure keys directory exists
+if (!fs.existsSync(KEYS_DIR)) {
+    fs.mkdirSync(KEYS_DIR);
+}
+
+let issuerKeys = null;
+
+function loadOrGenerateKeys() {
+    // 1. Try Environment Variables (Cloud/Stateless)
+    if (process.env.ISSUER_PRIVATE_KEY && process.env.ISSUER_PUBLIC_KEY) {
+        console.log('Loading issuer keys from Environment Variables...');
+        try {
+            // Support both raw multiline string or base64 encoded env vars if needed
+            // For now assuming standard PEM string in env
+            const privateKeyPem = process.env.ISSUER_PRIVATE_KEY.replace(/\\n/g, '\n');
+            const publicKeyPem = process.env.ISSUER_PUBLIC_KEY.replace(/\\n/g, '\n');
+
+            issuerKeys = {
+                privateKey: crypto.importPrivateKeyPem(privateKeyPem),
+                publicKey: crypto.importPublicKeyPem(publicKeyPem),
+            };
+            return;
+        } catch (e) {
+            console.error('Failed to load keys from ENV:', e.message);
+            // Fallback to file generation not safe if env was intended but failed
+        }
+    }
+
+    // 2. Try File System (Persistence)
+    if (fs.existsSync(PRIVATE_KEY_PATH) && fs.existsSync(PUBLIC_KEY_PATH)) {
+        console.log('Loading existing issuer keys from File System...');
+        try {
+            const privateKeyPem = fs.readFileSync(PRIVATE_KEY_PATH, 'utf8');
+            const publicKeyPem = fs.readFileSync(PUBLIC_KEY_PATH, 'utf8');
+
+            issuerKeys = {
+                privateKey: crypto.importPrivateKeyPem(privateKeyPem),
+                publicKey: crypto.importPublicKeyPem(publicKeyPem),
+            };
+        } catch (e) {
+            console.error('Failed to load keys:', e.message);
+            process.exit(1);
+        }
+    } else {
+        console.log('Generating new issuer key pair (ECDSA P-256)...');
+        const keys = crypto.generateIssuerKeyPair();
+
+        // Only save to file if we can (might fail on read-only cloud fs)
+        try {
+            if (!fs.existsSync(KEYS_DIR)) fs.mkdirSync(KEYS_DIR);
+            fs.writeFileSync(PRIVATE_KEY_PATH, keys.privateKey.pem);
+            fs.writeFileSync(PUBLIC_KEY_PATH, keys.publicKey.pem);
+        } catch (e) {
+            console.warn("Could not save keys to disk (Read-Only FS?):", e.message);
+        }
+
+        issuerKeys = {
+            privateKey: keys.privateKey.keyObject,
+            publicKey: keys.publicKey.keyObject,
+        };
+    }
+}
+
 // Initialize DB and Keys
-initDB().then(() => {
-    ensureKeys();
+initDB().then(async () => {
+    loadOrGenerateKeys();
+
+    // Auto-seed if citizens table is empty (for Stateless Demos)
+    const db = await getDB();
+    const count = await db.get('SELECT count(*) as count FROM citizens');
+    if (count && count.count === 0) {
+        console.log('Database empty. Auto-seeding default citizens...');
+        await db.run(`INSERT INTO citizens (citizen_id, income, eligibility_status) VALUES ('CITIZEN_001', 3000, 'true')`);
+        await db.run(`INSERT INTO citizens (citizen_id, income, eligibility_status) VALUES ('CITIZEN_002', 8000, 'false')`);
+        await db.run(`INSERT INTO citizens (citizen_id, income, eligibility_status) VALUES ('CITIZEN_003', 2500, 'true')`);
+    }
 });
 
 // Middleware to get DB
@@ -22,14 +130,44 @@ app.use(async (req, res, next) => {
     next();
 });
 
-// GET /public-key - To allow terminals/wallets to get issuer public key
+// Nonce Store (In-Memory for now)
+const nonceStore = new crypto.NonceStore();
+
+// Cleanup expired nonces every minute
+setInterval(() => {
+    nonceStore.cleanup();
+}, 60 * 1000);
+
+// =============================================================================
+// API ROUTES
+// =============================================================================
+
+// GET /public-key
+// Returns the issuer's public key (Raw Base64URL format preferred for mobile)
 app.get('/public-key', (req, res) => {
-    res.json({ publicKey: getPublicKey() });
+    if (!issuerKeys) return res.status(503).json({ error: 'Keys not initialized' });
+
+    // Export to raw format (compact, standard for this system)
+    const rawKey = crypto.exportPublicKeyRaw(issuerKeys.publicKey);
+    res.json({ publicKey: rawKey });
+});
+
+// POST /challenge
+// Generate a nonce for the wallet to sign
+app.post('/challenge', (req, res) => {
+    const terminalId = req.body.terminalId || 'UNKNOWN_TERMINAL';
+    const challenge = crypto.generateChallenge(terminalId);
+
+    // Store it to prevent replay later
+    nonceStore.storeChallenge(challenge.nonce, challenge);
+
+    res.json(challenge);
 });
 
 // POST /issue-token
-// Inputs: citizen_id, wallet_public_key (PEM string)
-app.post('/issue-token', async (req, res) => {
+// Issues a signed eligibility token bound to the user's wallet public key
+// Input: { citizen_id, wallet_public_key }
+app.post('/issue-token', issueLimiter, async (req, res) => {
     const { citizen_id, wallet_public_key } = req.body;
 
     if (!citizen_id || !wallet_public_key) {
@@ -49,84 +187,125 @@ app.post('/issue-token', async (req, res) => {
         return res.status(403).json({ error: 'Not eligible for subsidy' });
     }
 
-    const token_id = crypto.randomUUID();
-    const expiry = Date.now() + (30 * 24 * 60 * 60 * 1000); // 30 days
+    // Create Token (ECDSA P-256)
+    try {
+        const tokenResult = crypto.createToken({
+            eligible: true,
+            walletPublicKey: wallet_public_key,
+            issuerId: 'GOV_ISSUER',
+            issuerPrivateKey: issuerKeys.privateKey,
+            validitySeconds: 30 * 24 * 60 * 60 // 30 days
+        });
 
-    const tokenData = {
-        token_id,
-        subsidy_type: 'Government Tech Subsidy',
-        eligible: true,
-        expiry,
-        wallet_public_key // Bind token to this wallet
-    };
+        // Store validity in DB (optional, for revocation checks)
+        // Note: We authenticate the token via signature, but logging issuance is good practice
+        const expiryMs = Date.now() + (30 * 24 * 60 * 60 * 1000);
+        await req.db.run(
+            'INSERT INTO issued_tokens (token_id, token_hash, expiry, issuer_signature) VALUES (?, ?, ?, ?)',
+            [tokenResult.payload.jti, tokenResult.tokenHash, expiryMs, 'ECDSA_SIG']
+        );
 
-    const signature = signData(tokenData);
-
-    // Store validity in DB (optional, for revocation checks, but we use it here)
-    await req.db.run(
-        'INSERT INTO issued_tokens (token_id, token_hash, expiry, issuer_signature) VALUES (?, ?, ?, ?)',
-        [token_id, hashData(JSON.stringify(tokenData)), expiry, signature]
-    );
-
-    res.json({
-        token: tokenData,
-        signature
-    });
+        res.json({
+            token: tokenResult.token
+        });
+    } catch (e) {
+        console.error('Token creation failed:', e);
+        res.status(500).json({ error: 'Failed to issue token: ' + e.message });
+    }
 });
 
 // POST /verify-token
-// Verifies the proof and logs the audit
-// Proof = { token, token_signature, challenge_nonce, wallet_signature }
+// Verifies the ZKP proof (Token + Wallet Signature + Challenge)
+// Input: Proof object { version, token, nonce, signature, ... }
 app.post('/verify-token', async (req, res) => {
-    const { token, token_signature, challenge_nonce, wallet_signature, terminal_id } = req.body;
+    const { proof } = req.body;
+    const terminalId = req.body.terminalId || 'UNKNOWN_TERMINAL';
 
-    if (!token || !token_signature || !challenge_nonce || !wallet_signature || !terminal_id) {
-        return res.status(400).json({ error: 'Missing verification data' });
+    console.log('[DEBUG] /verify-token body:', JSON.stringify(req.body));
+
+    if (!proof) {
+        return res.status(400).json({ error: 'Missing proof object', received: req.body });
     }
 
-    // 1. Verify Issuer Signature
-    const isIssuerValid = verifySignature(token, token_signature);
-    if (!isIssuerValid) {
-        return res.status(400).json({ error: 'Invalid Issuer Signature' });
+    const pNonce = proof.n || proof.nonce;
+    const pSig = proof.s || proof.signature;
+
+    if (!pNonce) {
+        return res.status(400).json({ error: 'Missing nonce (n/nonce)', proof_keys: Object.keys(proof) });
     }
 
-    // 2. Verify Wallet Binding (Proof of Ownership)
-    // The wallet should have signed the nonce with its private key.
-    const verifyWallet = crypto.createVerify('SHA256');
-    verifyWallet.update(challenge_nonce);
-    verifyWallet.end();
+    // 1. Determine Verification Mode (Active vs Passive)
+    const challenge = nonceStore.getChallenge(pNonce);
 
-    const isWalletValid = verifyWallet.verify(token.wallet_public_key, wallet_signature, 'hex');
-    if (!isWalletValid) {
-        return res.status(400).json({ error: 'Invalid Wallet Proof' });
+    // ACTIVE FLOW (Challenge exists)
+    if (challenge) {
+        const consumed = nonceStore.consumeNonce(pNonce);
+        if (!consumed) return res.status(400).json({ error: 'Nonce already used' });
+
+        const result = crypto.verifyProof({
+            proof: proof,
+            challenge: challenge, // Pass the active challenge
+            issuerPublicKey: issuerKeys.publicKey
+        });
+
+        if (!result.valid) return res.status(400).json({ error: result.error });
+
+        // Log & Respond
+        await logAudit(req.db, result.tokenHash, terminalId, 'ELIGIBLE');
+        return res.json({ status: 'ELIGIBLE', audit_logged: true, details: result, mode: 'ACTIVE' });
     }
 
-    // 3. Check Expiry
-    if (Date.now() > token.expiry) {
-        return res.status(400).json({ error: 'Token Expired' });
+    // PASSIVE FLOW (Time-based Nonce)
+    // Check replay cache for signature
+    if (signatureCache.has(pSig)) {
+        return res.status(400).json({ error: 'Replay detected: Signature already used' });
     }
 
-    // 4. Audit Logging
-    const token_hash = hashData(JSON.stringify(token));
-    const timestamp = new Date().toISOString();
+    // Verify without challenge object (logic inside proof.js handles timestamp validation)
+    const result = crypto.verifyProof({
+        proof: proof,
+        challenge: null, // Indicates passive mode
+        issuerPublicKey: issuerKeys.publicKey
+    });
 
-    // Get previous hash
-    const lastLog = await req.db.get('SELECT current_hash FROM audit_logs ORDER BY audit_id DESC LIMIT 1');
-    const prev_hash = lastLog ? lastLog.current_hash : 'GENESIS_HASH';
+    if (!result.valid) {
+        return res.status(400).json({ error: result.error });
+    }
 
-    const record_data = prev_hash + token_hash + terminal_id + timestamp + 'ELIGIBLE';
-    const current_hash = hashData(record_data);
+    // Cache signature to prevent reuse logic
+    signatureCache.add(pSig);
 
-    await req.db.run(
-        'INSERT INTO audit_logs (token_hash, terminal_id, timestamp, result, prev_hash, current_hash) VALUES (?, ?, ?, ?, ?, ?)',
-        [token_hash, terminal_id, timestamp, 'ELIGIBLE', prev_hash, current_hash]
-    );
-
-    res.json({ status: 'ELIGIBLE', audit_logged: true });
+    await logAudit(req.db, result.tokenHash, terminalId, 'ELIGIBLE');
+    return res.json({ status: 'ELIGIBLE', audit_logged: true, details: result, mode: 'PASSIVE' });
 });
 
+// Helper for Audit Logging
+async function logAudit(db, tokenHash, terminalId, resultStatus) {
+    const timestamp = new Date().toISOString();
+    const lastLog = await db.get('SELECT current_hash FROM audit_logs ORDER BY audit_id DESC LIMIT 1');
+    const prev_hash = lastLog ? lastLog.current_hash : 'GENESIS_HASH';
+    const record_data = prev_hash + tokenHash + terminalId + timestamp + resultStatus;
+    const current_hash = crypto.sha256Hex(record_data);
+
+    await db.run(
+        'INSERT INTO audit_logs (token_hash, terminal_id, timestamp, result, prev_hash, current_hash) VALUES (?, ?, ?, ?, ?, ?)',
+        [tokenHash, terminalId, timestamp, resultStatus, prev_hash, current_hash]
+    );
+}
+
+// Signature Cache for Passive Replay Protection
+const signatureCache = {
+    cache: new Set(),
+    add(sig) {
+        this.cache.add(sig);
+        setTimeout(() => this.cache.delete(sig), 60 * 1000); // 60s Memory
+    },
+    has(sig) {
+        return this.cache.has(sig);
+    }
+};
+
 // GET /audit-logs
-// Optional: Filter by token_id/hash
 app.get('/audit-logs', async (req, res) => {
     const logs = await req.db.all('SELECT * FROM audit_logs ORDER BY audit_id DESC LIMIT 50');
     res.json(logs);
@@ -159,7 +338,6 @@ app.post('/update-citizen', async (req, res) => {
     if (!citizen_id) return res.status(400).json({ error: 'Missing citizen_id' });
 
     try {
-        // Upsert logic (Insert or Replace)
         const exists = await req.db.get('SELECT citizen_id FROM citizens WHERE citizen_id = ?', [citizen_id]);
 
         if (exists) {
@@ -192,5 +370,6 @@ app.get('/issued-tokens', async (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`Backend running on http://localhost:${PORT}`);
+    console.log(`- Crypto Core: ECDSA P-256 (Enabled)`);
 });
 

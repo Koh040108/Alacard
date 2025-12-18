@@ -42,22 +42,22 @@ export function parseToken(token) {
     if (typeof token !== 'string') {
         throw new Error('Token must be a string');
     }
-    
+
     const parts = token.split('.');
     if (parts.length !== 3) {
         throw new Error('Token must have exactly 3 parts');
     }
-    
+
     const [headerB64, payloadB64, signatureB64] = parts;
-    
+
     // Decode header
     const headerBytes = base64UrlDecode(headerB64);
     const header = JSON.parse(new TextDecoder().decode(headerBytes));
-    
+
     // Decode payload
     const payloadBytes = base64UrlDecode(payloadB64);
     const payload = JSON.parse(new TextDecoder().decode(payloadBytes));
-    
+
     return {
         header,
         payload,
@@ -106,54 +106,52 @@ export async function generateProof({ token, nonce, walletPrivateKey }) {
     // ==========================================================================
     // INPUT VALIDATION
     // ==========================================================================
-    
+
     if (typeof token !== 'string' || token.length === 0) {
         throw new Error('token must be a non-empty string');
     }
-    
+
     if (typeof nonce !== 'string' || nonce.length === 0) {
         throw new Error('nonce must be a non-empty string');
     }
-    
+
     if (!walletPrivateKey || walletPrivateKey.type !== 'private') {
         throw new Error('walletPrivateKey must be a valid CryptoKey');
     }
-    
+
     // ==========================================================================
     // BUILD PROOF MESSAGE
     // ==========================================================================
-    
+
     const tokenHash = await hashToken(token);
-    
+
     // Message format: nonce || tokenHash
     // Binds this proof to this specific token and challenge
     const message = `${nonce}.${tokenHash}`;
     const messageBytes = new TextEncoder().encode(message);
-    
+
     // ==========================================================================
     // SIGN PROOF
     // Web Crypto outputs raw signature format directly (r || s, 64 bytes)
     // ==========================================================================
-    
+
     const signature = await crypto.subtle.sign(
         { name: 'ECDSA', hash: 'SHA-256' },
         walletPrivateKey,
         messageBytes
     );
-    
+
     // ==========================================================================
     // BUILD PROOF OBJECT
     // ==========================================================================
-    
+
     const proof = {
-        version: PROOF_VERSION,
-        token: token,
-        nonce: nonce,
-        tokenHash: tokenHash,
-        signature: base64UrlEncode(new Uint8Array(signature)),
-        timestamp: now(),
+        v: PROOF_VERSION,
+        t: token,
+        n: nonce,
+        s: base64UrlEncode(new Uint8Array(signature)),
     };
-    
+
     return proof;
 }
 

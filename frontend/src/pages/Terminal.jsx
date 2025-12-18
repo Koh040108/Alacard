@@ -1,22 +1,88 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import api from '../utils/api';
 import { TerminalSquare, CheckCircle, XCircle, RefreshCw, ShieldCheck } from 'lucide-react';
+import { Html5QrcodeScanner } from 'html5-qrcode';
 
 const Terminal = () => {
     const [nonce, setNonce] = useState('');
     const [proofInput, setProofInput] = useState('');
     const [result, setResult] = useState(null);
     const [loading, setLoading] = useState(false);
+    const [processedProof, setProcessedProof] = useState('');
+    const scannerRef = useRef(null);
 
-    const generateNonce = () => {
-        const random = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-        setNonce(random);
-        setProofInput('');
-        setResult(null);
+    useEffect(() => {
+        // Only initialize scanner if waiting for input (no active nonce session) and no manual input
+        if (!nonce && !proofInput && !result) {
+
+            if (scannerRef.current) return; // Prevent double-init
+
+            const scanner = new Html5QrcodeScanner(
+                "reader",
+                { fps: 15, qrbox: { width: 300, height: 300 } },
+                /* verbose= */ false
+            );
+
+            scannerRef.current = scanner;
+
+            scanner.render((decodedText) => {
+                // Success callback
+                try {
+                    console.log("Scanned:", decodedText);
+                    JSON.parse(decodedText); // Validate JSON
+                    setProofInput(decodedText);
+
+                    // Stop scanning on success
+                    scanner.clear().then(() => {
+                        scannerRef.current = null;
+                    }).catch(console.error);
+
+                } catch (e) {
+                    console.warn("Scanned invalid format");
+                }
+            }, (error) => {
+                // Error callback
+            });
+
+            return () => {
+                if (scannerRef.current) {
+                    scannerRef.current.clear().catch(console.error);
+                    scannerRef.current = null;
+                }
+            };
+        }
+    }, [nonce, proofInput, result]);
+
+    // Use effect to auto-verify when proofInput is set from scanner
+    useEffect(() => {
+        if (proofInput && !nonce && proofInput !== processedProof) {
+            handleVerify();
+        }
+    }, [proofInput, processedProof]); // Add processedProof dep
+
+    const generateNonce = async () => {
+        setLoading(true);
+        try {
+            // Fetch challenge from backend (required for server-side verification)
+            const res = await api.post('/challenge', { terminalId: 'TERM-001' });
+            setNonce(res.data.nonce);
+            setProofInput('');
+            setResult(null);
+            setProcessedProof(''); // Reset processed proof
+        } catch (err) {
+            console.error("Failed to get challenge:", err);
+            alert("Network Error: Could not reach backend challenge service.");
+        }
+        setLoading(false);
     };
 
     const handleVerify = async () => {
         if (!proofInput) return;
+
+        // Prevent re-verifying the same proof (React StrictMode defense)
+        if (proofInput === processedProof) return;
+        setProcessedProof(proofInput);
+
         setLoading(true);
         try {
             let proof;
@@ -26,14 +92,20 @@ const Terminal = () => {
                 throw new Error("Invalid Proof Format (JSON expected)");
             }
 
-            if (proof.challenge_nonce !== nonce) {
+            // Client-side check: Ensure the proof corresponds to THIS session's nonce
+            // Note: The proof object key is 'nonce', not 'challenge_nonce'
+
+            // Only enforce nonce match if we are in an ACTIVE session (nonce is set)
+            const pNonce = proof.n || proof.nonce;
+            if (nonce && pNonce !== nonce) {
                 throw new Error("Nonce mismatch! Possible Replay Attack.");
             }
+            // If nonce is NOT set, we are in passive mode (timestamp nonce), server validates it.
 
             // Send to backend for formal verification and audit logging
             // The backend performs the same PKI checks we would do locally
             const res = await api.post('/verify-token', {
-                ...proof,
+                proof: proof, // Wrap in proof object as expected by server
                 terminal_id: 'TERM-001'
             });
 
@@ -61,10 +133,17 @@ const Terminal = () => {
                     <TerminalSquare className="text-green-400" /> Session Control
                 </h2>
 
-                {!nonce ? (
-                    <button onClick={generateNonce} className="btn-primary w-full flex justify-center items-center gap-2">
-                        <RefreshCw size={18} /> Start New Verification
-                    </button>
+                {!nonce && !proofInput ? (
+                    <div className="space-y-4">
+                        <div id="reader" className="w-full bg-black rounded-xl overflow-hidden min-h-[300px]"></div>
+                        <p className="text-center text-xs text-gray-500">Scan User QR Code</p>
+
+                        <div className="flex gap-2">
+                            <button onClick={generateNonce} className="btn-secondary w-full flex justify-center items-center gap-2 text-xs">
+                                <RefreshCw size={14} /> Manual Challenge (Active)
+                            </button>
+                        </div>
+                    </div>
                 ) : (
                     <div className="space-y-4">
                         <div className="bg-slate-800 p-4 rounded border border-slate-600 text-center">
@@ -91,8 +170,8 @@ const Terminal = () => {
                             {loading ? 'Verifying with Government Node...' : 'Verify Eligibility'}
                         </button>
 
-                        <button onClick={generateNonce} className="w-full text-xs text-gray-500 hover:text-white underline">
-                            Reset / New Session
+                        <button onClick={() => { setNonce(''); setProofInput(''); setProcessedProof(''); setResult(null); }} className="w-full text-xs text-gray-500 hover:text-white underline">
+                            Cancel / Scan Again
                         </button>
                     </div>
                 )}

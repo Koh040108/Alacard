@@ -1,5 +1,6 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Link, useLocation } from 'react-router-dom';
+import { AppErrorBoundary } from './components/ErrorBoundary';
 import Home from './pages/Home';
 import Wallet from './pages/Wallet';
 import Terminal from './pages/Terminal';
@@ -45,13 +46,15 @@ const App = () => {
       <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-slate-900 to-black text-white">
         <NavBar />
         <main className="container mx-auto py-8">
-          <Routes>
-            <Route path="/" element={<Home />} />
-            <Route path="/wallet" element={<Wallet />} />
-            <Route path="/terminal" element={<Terminal />} />
-            <Route path="/audit" element={<Audit />} />
-            <Route path="/issuer" element={<Issuer />} />
-          </Routes>
+          <AppErrorBoundary>
+            <Routes>
+              <Route path="/" element={<Home />} />
+              <Route path="/wallet" element={<Wallet />} />
+              <Route path="/terminal" element={<Terminal />} />
+              <Route path="/audit" element={<Audit />} />
+              <Route path="/issuer" element={<Issuer />} />
+            </Routes>
+          </AppErrorBoundary>
         </main>
       </div>
     </Router>

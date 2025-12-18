@@ -1,247 +1,87 @@
-# AlaCard - Privacy-Preserving Eligibility Verification (MVP)
+# Alacard: Privacy-Preserving Subsidy Verification
 
-AlaCard is a hackathon-ready solution for verifying citizen subsidy eligibility without revealing personal data. It uses cryptographic signatures (PKI), ZKP-style challenge-response authentication, and an append-only audit trail.
+Alacard is a **Zero-Knowledge Proof (ZKP)** based system for verifying citizen eligibility for subsidies without revealing personal identity information (PII).
 
-## 🚀 Features
+## 🚀 Key Features
 
-- **Privacy**: No personal data (IC, Name, Income) is stored in the token or shared with the terminal. 
-- **Security**: 
-  - **PKI**: Tokens are signed by the Government Issuer.
-  - **Wallet Binding**: Tokens are bound to the user's wallet private key.
-  - **Replay Protection**: Verifications use a random nonce.
-- **Transparency**: All verifications are logged in a hashed, append-only audit log.
-- **Offline Capable**: Terminals can verify cryptographic proofs locally (simulated in this web MVP).
+- **Privacy-First**: Verifiers (Terminals) only learn "Eligible" or "Not Eligible". They never see the user's name, ID, or income.
+- **Crypto-Binding**: Tokens are cryptographically updated to a specific user's wallet (ECDSA P-256).
+- **Replay Protection**: Uses server-generated nonces to prevent attackers from reusing stolen proofs.
+- **Auditability**: Every verification event is cryptographically logged on the server.
 
-## 🛠 Tech Stack
+## 🏗 Architecture
 
-- **Backend**: Node.js, Express, SQLite, Native Crypto
-- **Frontend**: React (Vite), Tailwind CSS, Lucide Icons, Node-Forge (Crypto)
+The system consists of three main components:
 
-## 📂 Project Structure
+1.  **Backend (Issuer & Verifier)**
+    - **Issuer**: Signs eligibility tokens using a private ECDSA key.
+    - **Verifier**: Validates ZK proofs submitted by terminals.
+    - **Tech**: Node.js, Express, SQLite, Native Crypto Module (ECDSA P-256).
 
-- `backend/`: Issuer API, Verification Logic, SQLite Database.
-  - `server.js`: Main API.
-  - `cryptoUtils.js`: Signing and Hashing logic.
-  - `database.js`: DB Schema.
-- `frontend/`: Citizen Wallet and Verification Terminal.
-  - `src/pages/Wallet.jsx`: Secure storage & ZKP generation.
-  - `src/pages/Terminal.jsx`: Verification logic.
-  - `src/pages/Audit.jsx`: Blockchain-style log viewer.
+2.  **Wallet (Frontend)**
+    - **Role**: Stores the user's `private key` securely in the browser (Web Crypto API).
+    - **Function**: Generates a signature over `(Token + Nonce)` to prove ownership.
+    - **Tech**: React, Vite, Web Crypto API.
 
-## 🏁 Getting Started
+3.  **Terminal (Frontend)**
+    - **Role**: The point-of-sale device used by merchants.
+    - **Function**: Requests a challenge (nonce) and verifies the user's proof.
+    - **Tech**: React, Vite.
+
+## 🛠️ Setup & Installation
 
 ### Prerequisites
 - Node.js (v18+)
+- NPM
 
-### 1. Installation
-
-Run this from the root directory:
-
-```bash
-npm run install:all
-```
-
-(Or manually `npm install` in both `backend` and `frontend` folders).
-
-### 2. Run the Backend
-
-Open a terminal:
-
-```bash
-npm run backend
-```
-
-(Server runs on http://localhost:3000)
-
-### 3. Seed Mock Data
-
-In a new terminal (or use the script provided):
-
-```bash
-npm run seed
-```
-
-This resets the database and creates mock citizens:
-- `CITIZEN_001` (Eligible)
-- `CITIZEN_002` (Not Eligible - Income too high)
-- `CITIZEN_003` (Eligible)
-
-### 4. Run the Frontend
-
-Open another terminal:
-
-```bash
-npm run frontend
-```
-
-(App runs on http://localhost:5173)
-
-## 📱 How to Demo
-
-1. **Open Wallet** (`/wallet`):
-   - Click "Initialize Secure Wallet" to generate keys.
-   - Enter `CITIZEN_001` and click "Download Eligibility Token".
-   - You now have a signed token.
-
-2. **Open Terminal** (`/terminal`) in a separate tab/window:
-   - Click "Start New Verification" to generate a Nonce (e.g., `abc123xym`).
-
-3. **Prove Eligibility**:
-   - Go back to **Wallet**.
-   - Paste the Nonce into the "Prove Eligibility" input.
-   - Click "Generate Zero-Knowledge Proof".
-   - Copy the JSON Proof.
-
-4. **Verify**:
-   - Go back to **Terminal**.
-   - Paste the JSON Proof.
-   - Click "Verify Eligibility".
-   - Result: **ELIGIBLE** (and logged).
-
-5. **Audit**:
-   - Go to **Audit Log** (`/audit`).
-   - See the new entry linked to the previous hash.
-
-## 🔐 Security Design
-
-1. **Issuer Signature**: Ensures the token was created by the government.
-2. **Wallet Binding**: The token contains the User's Public Key. The Proof must contain a signature of the Nonce by the corresponding Private Key. This prevents token theft/cloning (unless the private key is stolen).
-3. **Audit Chain**: `current_hash = SHA256(prev_hash + data)`. modification of logs allows detection.
-
-## 🔑 Cryptographic Core
-
-The system uses **ECDSA P-256 (ES256)** with **SHA-256** for all cryptographic operations.
-
-### Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    GOVERNMENT ISSUER                            │
-│  ┌───────────────┐     ┌───────────────┐                       │
-│  │ Issuer Keys   │────▶│ Sign Token    │                       │
-│  │ (P-256)       │     │ (ECDSA)       │                       │
-│  └───────────────┘     └───────┬───────┘                       │
-└────────────────────────────────┼────────────────────────────────┘
-                                 │ Token (signed)
-                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    CITIZEN WALLET                               │
-│  ┌───────────────┐     ┌───────────────┐     ┌───────────────┐ │
-│  │ Wallet Keys   │     │ Store Token   │     │ Generate      │ │
-│  │ (P-256)       │────▶│ (bound to     │────▶│ Proof         │ │
-│  └───────────────┘     │ wallet key)   │     │ (signs nonce) │ │
-│                        └───────────────┘     └───────┬───────┘ │
-└──────────────────────────────────────────────────────┼──────────┘
-                                                       │ Proof
-                                                       ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    VERIFICATION TERMINAL                        │
-│  ┌───────────────┐     ┌───────────────┐     ┌───────────────┐ │
-│  │ Generate      │     │ Verify        │     │ Verify        │ │
-│  │ Nonce         │────▶│ Token Sig     │────▶│ Proof Sig     │ │
-│  │ (challenge)   │     │ (issuer key)  │     │ (wallet key)  │ │
-│  └───────────────┘     └───────────────┘     └───────┬───────┘ │
-│                                                      │         │
-│                                              ┌───────▼───────┐ │
-│                                              │ ELIGIBLE/NOT  │ │
-│                                              └───────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Crypto Modules
-
-| Module | Location | Purpose |
-|--------|----------|---------|
-| `utils.js` | `backend/crypto/` | Base64URL, SHA-256, nonces, constant-time comparison |
-| `keys.js` | `backend/crypto/` | P-256 key generation, import/export (PEM, JWK, raw) |
-| `token.js` | `backend/crypto/` | Token creation, signing, verification |
-| `proof.js` | `backend/crypto/` | Challenge-response, nonce management |
-| `tests.js` | `backend/crypto/` | Security test suite |
-
-### 🧪 Run Crypto Tests
-
-To verify the cryptographic implementation:
-
+### 1. Start the Backend
 ```bash
 cd backend
-node crypto/tests.js
+npm install
+npm start
 ```
+*Runs on port 3000. Setup includes automatic key generation (`keys/`) and DB initialization (`database.sqlite`).*
 
-**Expected output:**
+### 2. Start the Frontend
+```bash
+cd frontend
+npm install
+npm run dev
 ```
-============================================================
-AlaCard Security Tests
-============================================================
+*Runs on port 5173. Access via browser.*
 
-🔑 Generated test keys...
+## � Usage Guide
 
---- Basic Functionality ---
-✅ PASS: Token creation succeeds with valid inputs
-✅ PASS: Token verification succeeds with valid token
-✅ PASS: Challenge generation produces unique nonces
-✅ PASS: Proof generation and verification succeeds
+### Step 1: Issue Credentials
+1.  Open **Wallet** (`/`).
+2.  Click **"Link Identity"**.
+3.  Enter Citizen ID: `CITIZEN_001` (Pre-seeded eligible user).
+4.  The system issues a signed token bound to your browser's local key.
 
---- Attack Prevention Tests ---
-✅ PASS: ATTACK: Token tampering is detected
-✅ PASS: ATTACK: Proof replay is detected (same nonce)
-✅ PASS: ATTACK: Proof with wrong nonce is rejected
-✅ PASS: ATTACK: Stolen token cannot be used without wallet key
-✅ PASS: ATTACK: Forged token with wrong issuer key is rejected
-✅ PASS: ATTACK: Expired token is rejected
-✅ PASS: ATTACK: Algorithm confusion is prevented
-✅ PASS: ATTACK: Wallet binding is enforced
-✅ PASS: ATTACK: Invalid signature length is rejected
+### Step 2: Verification (The ZKP Flow)
+1.  Open **Terminal** page (separate tab/device).
+2.  Click **"Start New Verification"**. The terminal requests a **Nonce** from the backend.
+3.  **Copy** the Nonce.
+4.  Go to **Wallet** -> **"Present ID / Verify"**.
+5.  **Paste** the Nonce.
+6.  Click **"Generate Proof"**.
+    - *The wallet signs `hash(Token + Nonce)` with its private key.*
+7.  **Copy** the JSON Proof.
+8.  Go back to **Terminal** and **Paste** the Proof.
+9.  Click **"Verify"**.
+    - *The backend verifies the signature, nonce freshness, and token validity.*
 
---- Privacy Tests ---
-✅ PASS: Token does not contain IC number
-✅ PASS: Proof does not reveal token contents to eavesdropper
+## 🔒 Security Model
 
---- Cryptographic Properties ---
-✅ PASS: Key generation produces unique keys
-✅ PASS: Nonces have sufficient entropy
-✅ PASS: Token hashes are deterministic
-✅ PASS: Different tokens produce different hashes
-✅ PASS: Constant-time comparison prevents timing attacks
+| Component | Protection Mechanism |
+|Data Integrity| ECDSA P-256 Signatures (Issuer Key)|
+|Wallet Ownership| ECDSA P-256 Signatures (Wallet Key)|
+|Replay Attacks| Nonce-based Challenge/Response (5 min expiry)|
+|Privacy| Token contents hidden from Terminal; only validity status returned|
 
-============================================================
-Tests Complete: 20 passed, 0 failed
-============================================================
-```
+## 📂 Project Structure
 
-### Security Properties Tested
-
-| Attack | Protection |
-|--------|------------|
-| Token Tampering | Signature verification fails |
-| Replay Attack | Single-use nonces with expiry |
-| Stolen Token | Requires wallet private key |
-| Forged Token | Only issuer can sign |
-| Expired Token | Expiry timestamp enforced |
-| Algorithm Confusion | Only ES256 accepted |
-
-### Token Format
-
-```
-BASE64URL(header).BASE64URL(payload).BASE64URL(signature)
-```
-
-**Header:**
-```json
-{ "alg": "ES256", "typ": "ELIGIBILITY", "ver": "1" }
-```
-
-**Payload (NO PII):**
-```json
-{
-  "elig": true,           // Eligibility status
-  "wbind": "abc123...",   // SHA-256 hash of wallet public key
-  "wpub": "BExy...",      // Wallet public key (raw, Base64URL)
-  "iss": "GOV_ISSUER",    // Issuer ID
-  "iat": 1702800000,      // Issued at (Unix timestamp)
-  "exp": 1705392000,      // Expires at (Unix timestamp)
-  "jti": "uuid-..."       // Unique token ID
-}
-```
-
----
-*Built for Hackathon 2025*
+- `backend/crypto/`: The core cryptographic library (Keys, Tokens, Proofs).
+- `backend/server.js`: API endpoints for issuance and verification.
+- `frontend/src/crypto/`: Mirror of the crypto library for the browser.
+- `frontend/src/pages/`: React components for Wallet and Terminal.
