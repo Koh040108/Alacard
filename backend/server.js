@@ -4,50 +4,10 @@ const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
 const { initDB, getDB } = require('./database');
+const crypto = require('./crypto');
 const fraudEngine = require('./fraudEngine');
 
-// ... (existing imports)
-
-// ... (in /verify-token)
-
-    // 4. Extract Location
-    const locationObj = req.body.location || { state: 'Unknown' };
-    const locationStr = JSON.stringify(locationObj);
-
-    // 5. AI RISK ANALYSIS
-    const riskAnalysis = await fraudEngine.analyzeRisk(req.db, result.tokenHash, locationObj);
-    console.log('[AI] Risk Analysis:', riskAnalysis);
-
-    // ACTIVE FLOW (Challenge exists)
-    if (challenge) {
-        const consumed = nonceStore.consumeNonce(pNonce);
-        if (!consumed) return res.status(400).json({ error: 'Nonce already used' });
-
-        const result = crypto.verifyProof({
-            proof: proof,
-            challenge: challenge, 
-            issuerPublicKey: issuerKeys.publicKey
-        });
-
-        if (!result.valid) return res.status(400).json({ error: result.error });
-
-        // BLOCK if High Risk? Or just Warner? 
-        // For this Simulator, let's BLOCK if Critical > 80 (Impossible Travel)
-        let finalStatus = 'ELIGIBLE';
-        if (riskAnalysis.score >= 80) finalStatus = 'BLOCKED_FRAUD';
-        else if (riskAnalysis.score > 20) finalStatus = 'WARNING';
-
-        // Log & Respond
-        await logAudit(req.db, result.tokenHash, terminalId, locationStr, finalStatus, riskAnalysis);
-        
-        return res.json({ 
-            status: finalStatus, 
-            risk: riskAnalysis,
-            audit_logged: true, 
-            details: result, 
-            mode: 'ACTIVE' 
-        });
-    }
+const app = express();
 const PORT = 3000;
 
 // =============================================================================
@@ -276,7 +236,8 @@ app.post('/verify-token', async (req, res) => {
     }
 
     // 4. Extract Location
-    const location = req.body.location ? JSON.stringify(req.body.location) : 'UNKNOWN';
+    const locationObj = req.body.location || { state: 'Unknown' };
+    const locationStr = JSON.stringify(locationObj);
 
     // ACTIVE FLOW (Challenge exists)
     if (challenge) {
@@ -291,9 +252,26 @@ app.post('/verify-token', async (req, res) => {
 
         if (!result.valid) return res.status(400).json({ error: result.error });
 
+        // 5. AI RISK ANALYSIS
+        const riskAnalysis = await fraudEngine.analyzeRisk(req.db, result.tokenHash, locationObj);
+        console.log('[AI] Risk Analysis:', riskAnalysis);
+
+        // BLOCK if High Risk? Or just Warner? 
+        // For this Simulator, let's BLOCK if Critical > 80 (Impossible Travel)
+        let finalStatus = 'ELIGIBLE';
+        if (riskAnalysis.score >= 80) finalStatus = 'BLOCKED_FRAUD';
+        else if (riskAnalysis.score > 20) finalStatus = 'WARNING';
+
         // Log & Respond
-        await logAudit(req.db, result.tokenHash, terminalId, location, 'ELIGIBLE');
-        return res.json({ status: 'ELIGIBLE', audit_logged: true, details: result, mode: 'ACTIVE' });
+        await logAudit(req.db, result.tokenHash, terminalId, locationStr, finalStatus, riskAnalysis);
+
+        return res.json({
+            status: finalStatus,
+            risk: riskAnalysis,
+            audit_logged: true,
+            details: result,
+            mode: 'ACTIVE'
+        });
     }
 
     // PASSIVE FLOW (Time-based Nonce)
@@ -316,7 +294,7 @@ app.post('/verify-token', async (req, res) => {
     // Cache signature to prevent reuse logic
     signatureCache.add(pSig);
 
-    await logAudit(req.db, result.tokenHash, terminalId, 'ELIGIBLE');
+    await logAudit(req.db, result.tokenHash, terminalId, locationStr, 'ELIGIBLE');
     return res.json({ status: 'ELIGIBLE', audit_logged: true, details: result, mode: 'PASSIVE' });
 });
 
@@ -325,7 +303,7 @@ async function logAudit(db, tokenHash, terminalId, location, resultStatus, riskA
     const timestamp = new Date().toISOString();
     const lastLog = await db.get('SELECT current_hash FROM audit_logs ORDER BY audit_id DESC LIMIT 1');
     const prev_hash = lastLog ? lastLog.current_hash : 'GENESIS_HASH';
-    
+
     const riskStr = JSON.stringify(riskAnalysis);
 
     // Include location and risk in the immutable record chain
@@ -416,5 +394,5 @@ app.get('/issued-tokens', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`Backend running on http://localhost:${PORT}`);
     console.log(`- Crypto Core: ECDSA P-256 (Enabled)`);
+    console.log(`- AI Fraud Engine: Enabled`);
 });
-
