@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import api from '../utils/api';
 import { TerminalSquare, CheckCircle, XCircle, RefreshCw, ShieldCheck } from 'lucide-react';
-import { Html5QrcodeScanner } from 'html5-qrcode';
+import { Html5QrcodeScanner, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 
 const Terminal = () => {
     const [nonce, setNonce] = useState('');
@@ -9,6 +9,8 @@ const Terminal = () => {
     const [result, setResult] = useState(null);
     const [loading, setLoading] = useState(false);
     const [processedProof, setProcessedProof] = useState('');
+    const [cameraError, setCameraError] = useState('');
+    const [debugLog, setDebugLog] = useState('Initializing...'); // DEBUG STATE
     const scannerRef = useRef(null);
 
     useEffect(() => {
@@ -19,17 +21,30 @@ const Terminal = () => {
 
             const scanner = new Html5QrcodeScanner(
                 "reader",
-                { fps: 15, qrbox: { width: 300, height: 300 } },
+                {
+                    fps: 10, // Lower FPS for stability
+                    qrbox: { width: 250, height: 250 },
+                    aspectRatio: 1.0,
+                    // Remove Native Flag to ensure JS fallback works on all devices
+                    formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE]
+                },
                 /* verbose= */ false
             );
 
             scannerRef.current = scanner;
 
             scanner.render((decodedText) => {
+                setDebugLog(`Success: ${decodedText.substring(0, 10)}...`);
                 // Success callback
                 try {
                     console.log("Scanned:", decodedText);
-                    JSON.parse(decodedText); // Validate JSON
+
+                    // 1. Haptic Feedback
+                    if (navigator.vibrate) navigator.vibrate(200);
+
+                    // 2. Validate JSON
+                    JSON.parse(decodedText);
+
                     setProofInput(decodedText);
 
                     // Stop scanning on success
@@ -39,9 +54,20 @@ const Terminal = () => {
 
                 } catch (e) {
                     console.warn("Scanned invalid format");
+                    setDebugLog("Invalid JSON Format");
+                    // 3. User Feedback for Invalid Code
+                    alert("Invalid QR Code Format. Please scan an Alacard proof.");
                 }
             }, (error) => {
-                // Error callback
+                // Error callback - capture permission errors (ignore transient errors)
+                if (error?.message?.includes("No MultiFormat Readers")) {
+                    setDebugLog("Scanning... (No QR found)");
+                } else if (error?.name === "NotAllowedError") {
+                    setCameraError("Camera Permission Denied!");
+                } else {
+                    // Catch-all info
+                    setDebugLog(`Scanning... ${Math.floor(Date.now() / 1000) % 10}`);
+                }
             });
 
             return () => {
@@ -136,6 +162,18 @@ const Terminal = () => {
                 {!nonce && !proofInput ? (
                     <div className="space-y-4">
                         <div id="reader" className="w-full bg-black rounded-xl overflow-hidden min-h-[300px]"></div>
+
+                        {cameraError && (
+                            <div className="p-3 bg-red-900/50 border border-red-500 rounded text-red-200 text-xs text-center">
+                                {cameraError}
+                            </div>
+                        )}
+
+                        {/* DEBUG OVERLAY */}
+                        <p className="text-[10px] font-mono text-gray-600 text-center animate-pulse">
+                            Status: {debugLog}
+                        </p>
+
                         <p className="text-center text-xs text-gray-500">Scan User QR Code</p>
 
                         <div className="flex gap-2">

@@ -318,6 +318,7 @@ const Wallet = () => {
 const PassiveProofGenerator = ({ token, privateKeyJwk, onClose }) => {
     const [proof, setProof] = useState('');
     const [timeLeft, setTimeLeft] = useState(30);
+    const [showFullScreenQR, setShowFullScreenQR] = useState(false);
 
     useEffect(() => {
         let mounted = true;
@@ -383,11 +384,29 @@ const PassiveProofGenerator = ({ token, privateKeyJwk, onClose }) => {
     return (
         <div className="text-center">
             <h3 className="font-bold text-xl mb-1">Show to Terminal</h3>
-            <p className="text-gray-400 text-xs mb-4">Code refreshes in {timeLeft}s to prevent copying.</p>
 
-            <div className="bg-white p-4 rounded-xl mb-6 flex justify-center mx-auto w-fit">
-                {proof ? <QRCodeCanvas value={proof} size={300} level="L" includeMargin={true} /> : <div className="w-[300px] h-[300px] flex items-center justify-center text-black">Generating...</div>}
+            <div className="bg-white p-4 rounded-xl shadow-inner mb-6 flex justify-center cursor-pointer mx-auto w-fit" onClick={() => setShowFullScreenQR(true)}>
+                {proof ?
+                    <QRCodeCanvas value={proof} size={300} level="L" includeMargin={true} />
+                    :
+                    <div className="w-[300px] h-[300px] flex items-center justify-center text-black">Generating...</div>
+                }
             </div>
+
+            <p className="text-gray-500 text-sm mb-6 animate-pulse">
+                Refreshes in {timeLeft}s <span className="text-blue-500 font-bold block mt-1">(Tap QR to Enlarge)</span>
+            </p>
+
+            {/* Fullscreen QR Modal */}
+            {showFullScreenQR && (
+                <div className="fixed inset-0 z-50 bg-black bg-opacity-95 flex flex-col items-center justify-center p-4" onClick={() => setShowFullScreenQR(false)}>
+                    <h3 className="text-white text-xl mb-8 font-bold">Present to Scanner</h3>
+                    <div className="bg-white p-4 rounded-3xl">
+                        <QRCodeCanvas value={proof} size={window.innerWidth > 400 ? 400 : window.innerWidth - 60} level="L" includeMargin={true} />
+                    </div>
+                    <p className="text-gray-400 mt-8 text-sm">Tap anywhere to close</p>
+                </div>
+            )}
 
             <button
                 onClick={onClose}
