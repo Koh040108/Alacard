@@ -9,5 +9,8 @@
         "seed": "curl -X POST http://localhost:3000/seed"
     },
     "author": "",
-    "license": "ISC"
+    "license": "ISC",
+    "dependencies": {
+        "geolib": "^3.3.4"
+    }
 }
