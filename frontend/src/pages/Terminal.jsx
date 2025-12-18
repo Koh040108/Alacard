@@ -10,7 +10,7 @@ const Terminal = () => {
     const [loading, setLoading] = useState(false);
     const [processedProof, setProcessedProof] = useState('');
     const [cameraError, setCameraError] = useState('');
-    const [debugLog, setDebugLog] = useState('Initializing...'); // DEBUG STATE
+    const [debugLog, setDebugLog] = useState(`API: ${api.defaults.baseURL}`); // DEBUG STATE
     const [location, setLocation] = useState({ state: 'Selangor', city: 'Petaling Jaya' });
     const [riskData, setRiskData] = useState(null);
     const scannerRef = useRef(null);
@@ -253,9 +253,9 @@ const Terminal = () => {
 
             {result && (
                 <div className={`glass-panel p-8 text-center animate-in zoom-in-95 duration-300 border-2 ${result === 'ELIGIBLE' ? 'border-green-500 bg-green-500/10' :
-                        result === 'BLOCKED_FRAUD' ? 'border-red-600 bg-red-900/20' :
-                            result === 'WARNING' ? 'border-orange-500 bg-orange-500/10' :
-                                'border-red-500 bg-red-500/10'
+                    result === 'BLOCKED_FRAUD' ? 'border-red-600 bg-red-900/20' :
+                        result === 'WARNING' ? 'border-orange-500 bg-orange-500/10' :
+                            'border-red-500 bg-red-500/10'
                     }`}>
                     {result === 'ELIGIBLE' ? (
                         <>
@@ -289,7 +289,7 @@ const Terminal = () => {
                             <div className="flex justify-between items-center mb-2">
                                 <span className="text-xs text-gray-400 uppercase font-bold">AI Risk Score</span>
                                 <span className={`text-lg font-bold font-mono ${riskData.score > 60 ? 'text-red-500' :
-                                        riskData.score > 20 ? 'text-orange-400' : 'text-green-400'
+                                    riskData.score > 20 ? 'text-orange-400' : 'text-green-400'
                                     }`}>
                                     {riskData.score}/100
                                 </span>
@@ -299,7 +299,7 @@ const Terminal = () => {
                             <div className="w-full bg-slate-700 h-2 rounded-full mb-3 overflow-hidden">
                                 <div
                                     className={`h-full transition-all duration-1000 ${riskData.score > 60 ? 'bg-red-600' :
-                                            riskData.score > 20 ? 'bg-orange-500' : 'bg-green-500'
+                                        riskData.score > 20 ? 'bg-orange-500' : 'bg-green-500'
                                         }`}
                                     style={{ width: `${riskData.score}%` }}
                                 ></div>
