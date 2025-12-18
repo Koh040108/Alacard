@@ -4,9 +4,50 @@ const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
 const { initDB, getDB } = require('./database');
-const crypto = require('./crypto');
+const fraudEngine = require('./fraudEngine');
 
-const app = express();
+// ... (existing imports)
+
+// ... (in /verify-token)
+
+    // 4. Extract Location
+    const locationObj = req.body.location || { state: 'Unknown' };
+    const locationStr = JSON.stringify(locationObj);
+
+    // 5. AI RISK ANALYSIS
+    const riskAnalysis = await fraudEngine.analyzeRisk(req.db, result.tokenHash, locationObj);
+    console.log('[AI] Risk Analysis:', riskAnalysis);
+
+    // ACTIVE FLOW (Challenge exists)
+    if (challenge) {
+        const consumed = nonceStore.consumeNonce(pNonce);
+        if (!consumed) return res.status(400).json({ error: 'Nonce already used' });
+
+        const result = crypto.verifyProof({
+            proof: proof,
+            challenge: challenge, 
+            issuerPublicKey: issuerKeys.publicKey
+        });
+
+        if (!result.valid) return res.status(400).json({ error: result.error });
+
+        // BLOCK if High Risk? Or just Warner? 
+        // For this Simulator, let's BLOCK if Critical > 80 (Impossible Travel)
+        let finalStatus = 'ELIGIBLE';
+        if (riskAnalysis.score >= 80) finalStatus = 'BLOCKED_FRAUD';
+        else if (riskAnalysis.score > 20) finalStatus = 'WARNING';
+
+        // Log & Respond
+        await logAudit(req.db, result.tokenHash, terminalId, locationStr, finalStatus, riskAnalysis);
+        
+        return res.json({ 
+            status: finalStatus, 
+            risk: riskAnalysis,
+            audit_logged: true, 
+            details: result, 
+            mode: 'ACTIVE' 
+        });
+    }
 const PORT = 3000;
 
 // =============================================================================
@@ -234,8 +275,8 @@ app.post('/verify-token', async (req, res) => {
         return res.status(400).json({ error: 'Missing nonce (n/nonce)', proof_keys: Object.keys(proof) });
     }
 
-    // 1. Determine Verification Mode (Active vs Passive)
-    const challenge = nonceStore.getChallenge(pNonce);
+    // 4. Extract Location
+    const location = req.body.location ? JSON.stringify(req.body.location) : 'UNKNOWN';
 
     // ACTIVE FLOW (Challenge exists)
     if (challenge) {
@@ -251,7 +292,7 @@ app.post('/verify-token', async (req, res) => {
         if (!result.valid) return res.status(400).json({ error: result.error });
 
         // Log & Respond
-        await logAudit(req.db, result.tokenHash, terminalId, 'ELIGIBLE');
+        await logAudit(req.db, result.tokenHash, terminalId, location, 'ELIGIBLE');
         return res.json({ status: 'ELIGIBLE', audit_logged: true, details: result, mode: 'ACTIVE' });
     }
 
@@ -280,16 +321,20 @@ app.post('/verify-token', async (req, res) => {
 });
 
 // Helper for Audit Logging
-async function logAudit(db, tokenHash, terminalId, resultStatus) {
+async function logAudit(db, tokenHash, terminalId, location, resultStatus, riskAnalysis = {}) {
     const timestamp = new Date().toISOString();
     const lastLog = await db.get('SELECT current_hash FROM audit_logs ORDER BY audit_id DESC LIMIT 1');
     const prev_hash = lastLog ? lastLog.current_hash : 'GENESIS_HASH';
-    const record_data = prev_hash + tokenHash + terminalId + timestamp + resultStatus;
+    
+    const riskStr = JSON.stringify(riskAnalysis);
+
+    // Include location and risk in the immutable record chain
+    const record_data = prev_hash + tokenHash + terminalId + location + riskStr + timestamp + resultStatus;
     const current_hash = crypto.sha256Hex(record_data);
 
     await db.run(
-        'INSERT INTO audit_logs (token_hash, terminal_id, timestamp, result, prev_hash, current_hash) VALUES (?, ?, ?, ?, ?, ?)',
-        [tokenHash, terminalId, timestamp, resultStatus, prev_hash, current_hash]
+        'INSERT INTO audit_logs (token_hash, terminal_id, location, risk_data, timestamp, result, prev_hash, current_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [tokenHash, terminalId, location, riskStr, timestamp, resultStatus, prev_hash, current_hash]
     );
 }
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import api from '../utils/api';
-import { TerminalSquare, CheckCircle, XCircle, RefreshCw, ShieldCheck } from 'lucide-react';
+import { TerminalSquare, CheckCircle, XCircle, RefreshCw, ShieldCheck, AlertCircle } from 'lucide-react';
 import { Html5QrcodeScanner, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 
 const Terminal = () => {
@@ -11,7 +11,18 @@ const Terminal = () => {
     const [processedProof, setProcessedProof] = useState('');
     const [cameraError, setCameraError] = useState('');
     const [debugLog, setDebugLog] = useState('Initializing...'); // DEBUG STATE
+    const [location, setLocation] = useState({ state: 'Selangor', city: 'Petaling Jaya' });
+    const [riskData, setRiskData] = useState(null);
     const scannerRef = useRef(null);
+
+    const locations = [
+        { state: 'Selangor', city: 'Petaling Jaya' },
+        { state: 'Perak', city: 'Ipoh' },
+        { state: 'Penang', city: 'George Town' },
+        { state: 'Johor', city: 'Johor Bahru' },
+        { state: 'Sabah', city: 'Kota Kinabalu' },
+        { state: 'Sarawak', city: 'Kuching' }
+    ];
 
     useEffect(() => {
         // Only initialize scanner if waiting for input (no active nonce session) and no manual input
@@ -95,6 +106,7 @@ const Terminal = () => {
             setProofInput('');
             setResult(null);
             setProcessedProof(''); // Reset processed proof
+            setRiskData(null);
         } catch (err) {
             console.error("Failed to get challenge:", err);
             alert("Network Error: Could not reach backend challenge service.");
@@ -132,11 +144,18 @@ const Terminal = () => {
             // The backend performs the same PKI checks we would do locally
             const res = await api.post('/verify-token', {
                 proof: proof, // Wrap in proof object as expected by server
-                terminal_id: 'TERM-001'
+                terminal_id: 'TERM-001',
+                location: location // Send selected location
             });
+
+            setRiskData(res.data.risk);
 
             if (res.data.status === 'ELIGIBLE') {
                 setResult('ELIGIBLE');
+            } else if (res.data.status === 'BLOCKED_FRAUD') {
+                setResult('BLOCKED_FRAUD');
+            } else if (res.data.status === 'WARNING') {
+                setResult('WARNING');
             } else {
                 setResult('NOT ELIGIBLE');
             }
@@ -153,6 +172,23 @@ const Terminal = () => {
             <h1 className="text-3xl font-bold text-center bg-clip-text text-transparent bg-gradient-to-r from-green-400 to-teal-500">
                 Verification Terminal
             </h1>
+
+            {/* Location Selector */}
+            <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700 flex justify-between items-center">
+                <span className="text-gray-400 text-sm">Terminal Location:</span>
+                <select
+                    value={location.state}
+                    onChange={(e) => {
+                        const sel = locations.find(l => l.state === e.target.value);
+                        setLocation(sel);
+                    }}
+                    className="bg-slate-900 text-white border border-slate-600 rounded px-2 py-1 text-sm outline-none focus:border-green-500"
+                >
+                    {locations.map(l => (
+                        <option key={l.state} value={l.state}>{l.city}, {l.state}</option>
+                    ))}
+                </select>
+            </div>
 
             <div className="glass-panel p-6">
                 <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
@@ -216,15 +252,28 @@ const Terminal = () => {
             </div>
 
             {result && (
-                <div className={`glass-panel p-8 text-center animate-in zoom-in-95 duration-300 border-2 ${result === 'ELIGIBLE' ? 'border-green-500 bg-green-500/10' : 'border-red-500 bg-red-500/10'}`}>
+                <div className={`glass-panel p-8 text-center animate-in zoom-in-95 duration-300 border-2 ${result === 'ELIGIBLE' ? 'border-green-500 bg-green-500/10' :
+                        result === 'BLOCKED_FRAUD' ? 'border-red-600 bg-red-900/20' :
+                            result === 'WARNING' ? 'border-orange-500 bg-orange-500/10' :
+                                'border-red-500 bg-red-500/10'
+                    }`}>
                     {result === 'ELIGIBLE' ? (
                         <>
                             <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4" />
                             <h2 className="text-3xl font-bold text-white mb-2">ELIGIBLE</h2>
                             <p className="text-green-200">Subsidy Approved</p>
-                            <div className="mt-4 p-2 bg-black/20 rounded text-xs text-green-300 font-mono">
-                                Audit Logged: {new Date().toLocaleTimeString()}
-                            </div>
+                        </>
+                    ) : result === 'BLOCKED_FRAUD' ? (
+                        <>
+                            <ShieldCheck className="w-16 h-16 text-red-500 mx-auto mb-4 animate-pulse" />
+                            <h2 className="text-3xl font-bold text-red-500 mb-2">RISK DETECTED</h2>
+                            <p className="text-red-300 mb-4">Transaction Blocked by AI Engine</p>
+                        </>
+                    ) : result === 'WARNING' ? (
+                        <>
+                            <AlertCircle className="w-16 h-16 text-orange-500 mx-auto mb-4" />
+                            <h2 className="text-3xl font-bold text-orange-400 mb-2">WARNING</h2>
+                            <p className="text-orange-200 mb-4">Unusual Activity Detected</p>
                         </>
                     ) : (
                         <>
@@ -232,6 +281,45 @@ const Terminal = () => {
                             <h2 className="text-3xl font-bold text-white mb-2">NOT ELIGIBLE</h2>
                             <p className="text-red-200">Verification Failed</p>
                         </>
+                    )}
+
+                    {/* AI Risk Analysis Details */}
+                    {riskData && riskData.score > 0 && (
+                        <div className="mt-6 text-left bg-slate-900/50 p-4 rounded-lg border border-slate-700">
+                            <div className="flex justify-between items-center mb-2">
+                                <span className="text-xs text-gray-400 uppercase font-bold">AI Risk Score</span>
+                                <span className={`text-lg font-bold font-mono ${riskData.score > 60 ? 'text-red-500' :
+                                        riskData.score > 20 ? 'text-orange-400' : 'text-green-400'
+                                    }`}>
+                                    {riskData.score}/100
+                                </span>
+                            </div>
+
+                            {/* Progress Bar */}
+                            <div className="w-full bg-slate-700 h-2 rounded-full mb-3 overflow-hidden">
+                                <div
+                                    className={`h-full transition-all duration-1000 ${riskData.score > 60 ? 'bg-red-600' :
+                                            riskData.score > 20 ? 'bg-orange-500' : 'bg-green-500'
+                                        }`}
+                                    style={{ width: `${riskData.score}%` }}
+                                ></div>
+                            </div>
+
+                            <div className="space-y-1">
+                                {riskData.reasons.map((reason, idx) => (
+                                    <div key={idx} className="flex items-start gap-2 text-xs text-gray-300">
+                                        <span className="text-red-400 font-bold">•</span>
+                                        {reason}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {result === 'ELIGIBLE' && (
+                        <div className="mt-4 p-2 bg-black/20 rounded text-xs text-green-300 font-mono">
+                            Audit Logged: {new Date().toLocaleTimeString()}
+                        </div>
                     )}
                 </div>
             )}

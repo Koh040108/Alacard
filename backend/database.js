@@ -6,7 +6,7 @@ let db;
 
 async function initDB() {
   if (db) return db;
-  
+
   db = await open({
     filename: path.join(__dirname, 'alacard.db'),
     driver: sqlite3.Database
@@ -35,12 +35,25 @@ async function initDB() {
       audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
       token_hash TEXT,
       terminal_id TEXT,
+      location TEXT,
+      risk_data TEXT,
       timestamp TEXT,
       result TEXT,
       prev_hash TEXT,
       current_hash TEXT
     );
   `);
+
+  // Migration: Add location/risk column if it doesn't exist
+  try {
+    await db.exec('ALTER TABLE audit_logs ADD COLUMN location TEXT');
+  } catch(e) {}
+  
+  try {
+    await db.exec('ALTER TABLE audit_logs ADD COLUMN risk_data TEXT');
+    console.log("Migrated: Added risk_data column");
+  } catch(e) {}
+
 
   console.log('Database initialized');
   return db;
