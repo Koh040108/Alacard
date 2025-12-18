@@ -10,7 +10,7 @@ node_modules/
 
 # Build Outputs
 dist/
-build/
+build/ 
 *.tsbuildinfo
 
 # Debug Logs
