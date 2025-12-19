@@ -299,11 +299,25 @@ app.post('/verify-token', async (req, res) => {
         return res.status(400).json({ error: result.error });
     }
 
+    // 5. AI RISK ANALYSIS (Passive Flow)
+    const riskAnalysis = await fraudEngine.analyzeRisk(req.db, result.tokenHash, locationObj);
+    console.log('[AI] Risk Analysis (Passive):', riskAnalysis);
+
+    let finalStatus = 'ELIGIBLE';
+    if (riskAnalysis.score >= 80) finalStatus = 'BLOCKED_FRAUD';
+    else if (riskAnalysis.score > 20) finalStatus = 'WARNING';
+
     // Cache signature to prevent reuse logic
     signatureCache.add(pSig);
 
-    await logAudit(req.db, result.tokenHash, terminalId, locationStr, 'ELIGIBLE');
-    return res.json({ status: 'ELIGIBLE', audit_logged: true, details: result, mode: 'PASSIVE' });
+    await logAudit(req.db, result.tokenHash, terminalId, locationStr, finalStatus, riskAnalysis);
+    return res.json({
+        status: finalStatus,
+        risk: riskAnalysis,
+        audit_logged: true,
+        details: result,
+        mode: 'PASSIVE'
+    });
 });
 
 // Helper for Audit Logging
