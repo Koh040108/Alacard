@@ -244,6 +244,9 @@ app.post('/verify-token', async (req, res) => {
     const locationObj = req.body.location || { state: 'Unknown' };
     const locationStr = JSON.stringify(locationObj);
 
+    // Check if we have an active challenge for this nonce
+    const challenge = nonceStore.getChallenge(pNonce);
+
     // ACTIVE FLOW (Challenge exists)
     if (challenge) {
         const consumed = nonceStore.consumeNonce(pNonce);
