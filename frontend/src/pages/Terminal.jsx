@@ -188,6 +188,10 @@ const Terminal = () => {
 
             // Send to backend for formal verification and audit logging
             // The backend performs the same PKI checks we would do locally
+            // DEBUG: Alert user to confirm data quality
+            const debugMsg = `DEBUG PRE-SEND CHECK:\n\nWallet Loc: ${walletLoc ? JSON.stringify(walletLoc) : 'MISSING/NULL'}\nTerminal Loc: ${JSON.stringify(location)}\n\nClick OK to send to Server.`;
+            alert(debugMsg);
+
             console.log("sending to backend:", { walletLoc, location });
             const res = await api.post('/verify-token', {
                 proof: proof,
