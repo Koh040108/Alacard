@@ -138,33 +138,35 @@ const Terminal = () => {
             let walletLoc = null;
             let requestedAmount = null;
 
-            try {
-                const json = JSON.parse(proofInput);
+            let json = JSON.parse(proofInput);
 
-                // 1. Extract Proof
-                if (json.proof) {
-                    proof = json.proof;
-                } else {
-                    proof = json; // Legacy direct proof
-                }
-
-                // 2. Extract Location (Support multiple keys)
-                if (json.loc) walletLoc = json.loc;
-                else if (json.wallet_location) walletLoc = json.wallet_location;
-                else if (json.location) walletLoc = json.location;
-
-                // 3. Normalize Location to { lat, lng }
-                if (walletLoc) {
-                    if (walletLoc.latitude && !walletLoc.lat) {
-                        walletLoc = { lat: walletLoc.latitude, lng: walletLoc.longitude };
-                    }
-                }
-
-                // 4. Extract Amount
-                if (json.claim_amount) requestedAmount = json.claim_amount;
-            } catch (e) {
-                throw new Error("Invalid Proof Format (JSON expected)");
+            // Handle double-stringified JSON (common in QR scanning of strings)
+            if (typeof json === 'string') {
+                console.log("Detected double-encoded JSON, parsing again...");
+                json = JSON.parse(json);
             }
+
+            // 1. Extract Proof
+            if (json.proof) {
+                proof = json.proof;
+            } else {
+                proof = json; // Legacy direct proof
+            }
+
+            // 2. Extract Location (Support multiple keys)
+            if (json.loc) walletLoc = json.loc;
+            else if (json.wallet_location) walletLoc = json.wallet_location;
+            else if (json.location) walletLoc = json.location;
+
+            // 3. Normalize Location to { lat, lng }
+            if (walletLoc) {
+                if (walletLoc.latitude && !walletLoc.lat) {
+                    walletLoc = { lat: walletLoc.latitude, lng: walletLoc.longitude };
+                }
+            }
+
+            // 4. Extract Amount
+            if (json.claim_amount) requestedAmount = json.claim_amount;
 
             if (requestedAmount && !isNaN(parseFloat(requestedAmount))) {
                 setClaimAmount(parseFloat(requestedAmount));
