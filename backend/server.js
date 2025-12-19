@@ -331,7 +331,7 @@ app.post('/verify-token', async (req, res) => {
     }
 
     // 5. AI RISK ANALYSIS (Passive Flow)
-    const riskAnalysis = await fraudEngine.analyzeRisk(req.db, result.tokenHash, terminalLocation || {}); // Fix undefined locaionObj
+    const riskAnalysis = await fraudEngine.analyzeRisk(req.db, result.tokenHash, terminalLocation || {}, walletLocation); // Added walletLocation
     console.log('[AI] Risk Analysis (Passive):', riskAnalysis);
 
     let finalStatus = 'ELIGIBLE';
