@@ -130,6 +130,8 @@ const Terminal = () => {
         if (proofInput === processedProof) return;
         setProcessedProof(proofInput);
 
+        console.log("Raw QR Input:", proofInput);
+
         setLoading(true);
         try {
             let proof;
@@ -171,6 +173,7 @@ const Terminal = () => {
 
             // Send to backend for formal verification and audit logging
             // The backend performs the same PKI checks we would do locally
+            console.log("Verifying with Wallet Loc:", walletLoc);
             const res = await api.post('/verify-token', {
                 proof: proof,
                 terminal_id: 'TERM-001',

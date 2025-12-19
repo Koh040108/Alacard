@@ -229,6 +229,7 @@ app.post('/verify-token', async (req, res) => {
     const terminalId = req.body.terminalId || 'UNKNOWN_TERMINAL';
 
     console.log('[DEBUG] /verify-token body:', JSON.stringify(req.body));
+    console.log('[DEBUG] Received Wallet Location:', req.body.wallet_location);
 
     if (!proof) {
         return res.status(400).json({ error: 'Missing proof object', received: req.body });

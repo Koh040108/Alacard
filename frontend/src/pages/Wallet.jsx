@@ -124,6 +124,7 @@ const Wallet = () => {
         if (viewMode === 'scanning' && token && keys) {
 
             const generate = async () => {
+                setProofStr(''); // Clear old QR to prevents scanning stale/loading states
                 try {
                     const pk = await importPrivateKeyJwk(keys.privateKeyJwk);
                     // Use seconds for consistency with backend expectation if needed
