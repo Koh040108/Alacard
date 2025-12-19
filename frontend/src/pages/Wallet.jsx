@@ -145,7 +145,7 @@ const Wallet = () => {
                             console.warn("Location denied/unavailable");
                             setProofStr(JSON.stringify({ proof: p, loc: null, claim_amount: claimAmount }));
                         },
-                        { timeout: 2000 } // Fast timeout for UX
+                        { timeout: 10000 } // Increased to 10s for better GPS fix
                     );
                 } catch (e) {
                     console.error(e);
