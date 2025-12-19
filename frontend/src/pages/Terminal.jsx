@@ -248,6 +248,7 @@ const Terminal = () => {
             <h1 className="text-3xl font-bold text-center bg-clip-text text-transparent bg-gradient-to-r from-green-400 to-teal-500">
                 Verification Terminal
             </h1>
+            <p className="text-[10px] text-center text-slate-500 font-mono">v1.2 - Debug Patch Loaded</p>
 
             {/* Location Selector */}
             <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700 flex flex-col gap-2">
