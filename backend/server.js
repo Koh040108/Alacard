@@ -401,3 +401,5 @@ app.listen(PORT, () => {
     console.log(`- Crypto Core: ECDSA P-256 (Enabled)`);
     console.log(`- AI Fraud Engine: Enabled`);
 });
+
+module.exports = app;
