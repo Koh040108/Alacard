@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import api from '../utils/api';
-import { Users, Edit, RefreshCw, Save, ShieldCheck, AlertCircle } from 'lucide-react';
+import { Users, Edit, RefreshCw, Save, ShieldCheck, AlertCircle, Fuel } from 'lucide-react';
 
 const Issuer = () => {
     const [citizens, setCitizens] = useState([]);
@@ -8,6 +8,7 @@ const Issuer = () => {
     const [loading, setLoading] = useState(true);
     const [editMode, setEditMode] = useState(null); // citizen_id being edited
     const [formData, setFormData] = useState({});
+    const [simQuota, setSimQuota] = useState(300);
 
     const fetchData = async () => {
         setLoading(true);
@@ -16,10 +17,25 @@ const Issuer = () => {
                 api.get('/citizens'),
                 api.get('/issued-tokens')
             ]);
-            setCitizens(citizensRes.data);
-            setTokens(tokensRes.data);
+
+            console.log("Citizens Data:", citizensRes.data);
+
+            if (Array.isArray(citizensRes.data)) {
+                setCitizens(citizensRes.data);
+            } else {
+                console.error("Citizens API returned non-array:", citizensRes.data);
+                setCitizens([]);
+            }
+
+            if (Array.isArray(tokensRes.data)) {
+                setTokens(tokensRes.data);
+            } else {
+                setTokens([]);
+            }
+
         } catch (err) {
-            alert("Error fetching data: " + err.message);
+            console.error("Fetch Error:", err);
+            // alert("Error fetching data: " + err.message); // Suppress alert to avoid UI block
         }
         setLoading(false);
     };
@@ -47,8 +63,20 @@ const Issuer = () => {
         setFormData(prev => ({ ...prev, [field]: value }));
     };
 
+    const handleResetQuota = async () => {
+        if (!confirm(`Reset ALL citizens' subsidy quota to RM ${simQuota}? This cannot be undone.`)) return;
+        try {
+            await api.post('/admin/reset-quotas', { amount: parseFloat(simQuota) });
+            alert("Global Quota Updated");
+            fetchData();
+        } catch (e) {
+            alert(e.message);
+        }
+    };
+
     return (
         <div className="p-6 max-w-6xl mx-auto space-y-8 animate-in fade-in duration-500">
+            {/* Header ... */}
             <div className="flex justify-between items-center mb-8">
                 <div>
                     <h1 className="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-cyan-400">
@@ -62,6 +90,41 @@ const Issuer = () => {
                 >
                     <RefreshCw size={18} className={loading ? "animate-spin" : ""} /> Refresh
                 </button>
+            </div>
+
+            {/* Simulation Dashboard */}
+            <div className="glass-panel p-6 border-l-4 border-teal-500 bg-gradient-to-r from-teal-900/20 to-slate-900/50">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                    <div>
+                        <h2 className="text-xl font-bold text-teal-100 flex items-center gap-2">
+                            <Fuel className="text-teal-400" /> Petrol Subsidy Simulation
+                        </h2>
+                        <p className="text-sm text-teal-300/70 mt-1">
+                            Set the monthly subsidy quota for all citizens. This resets individual consumption records.
+                        </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 bg-slate-900/50 p-2 rounded-xl border border-teal-900/50">
+                        <div className="px-3">
+                            <label className="text-[10px] text-teal-500 font-bold uppercase tracking-wider block">Default Quota</label>
+                            <div className="flex items-baseline gap-1 text-teal-100">
+                                <span className="text-sm">RM</span>
+                                <input
+                                    type="number"
+                                    value={simQuota}
+                                    onChange={e => setSimQuota(e.target.value)}
+                                    className="bg-transparent w-16 focus:outline-none font-mono font-bold text-xl border-b border-teal-700 focus:border-teal-400 transition-colors"
+                                />
+                            </div>
+                        </div>
+                        <button
+                            onClick={handleResetQuota}
+                            className="bg-teal-600 hover:bg-teal-500 text-white font-bold py-3 px-6 rounded-lg transition-all shadow-lg hover:shadow-teal-500/20 active:scale-95"
+                        >
+                            Update All
+                        </button>
+                    </div>
+                </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">

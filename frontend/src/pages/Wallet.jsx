@@ -2,68 +2,75 @@ import React, { useState, useEffect } from 'react';
 import { generateWalletKeyPair, generateProof, importPrivateKeyJwk, parseToken } from '../crypto';
 import api from '../utils/api';
 import { QRCodeCanvas } from 'qrcode.react';
-import { Shield, Key, Plus, Scan, Copy, Check, ChevronRight, User, LogOut } from 'lucide-react';
+import { Shield, Check, Copy, Scan, X } from 'lucide-react';
+
+// Sub-pages
+import CitizenHome from './citizen/Home';
+import SubsidyWallet from './citizen/SubsidyWallet';
+import CitizenHistory from './citizen/History';
+import Profile from './citizen/Profile';
+import BottomNav from './citizen/BottomNav';
+
+const LOCATION_MAP = {
+    'Selangor': { latitude: 3.107, longitude: 101.606 },
+    'Perak': { latitude: 4.597, longitude: 101.090 },
+    'Penang': { latitude: 5.414, longitude: 100.311 },
+    'Johor': { latitude: 1.485, longitude: 103.761 },
+    'Sabah': { latitude: 5.980, longitude: 116.073 },
+    'Sarawak': { latitude: 1.553, longitude: 110.359 }
+};
 
 const Wallet = () => {
+    // Global State
     const [keys, setKeys] = useState(null);
     const [token, setToken] = useState(null);
-    const [tokenSignature, setTokenSignature] = useState(null);
-    const [citizenId, setCitizenId] = useState('');
     const [loading, setLoading] = useState(false);
-    const [nonce, setNonce] = useState('');
-    const [proof, setProof] = useState('');
-    const [view, setView] = useState('home'); // home, add-token, prove
+
+    // UI State
+    const [activeTab, setActiveTab] = useState('home'); // home, scan, notification, profile
+    const [viewMode, setViewMode] = useState('default'); // default, scanning (QR overlay)
+    const [citizenId, setCitizenId] = useState('');
+
+    // QR State
+    const [proofStr, setProofStr] = useState('');
+    const [timeLeft, setTimeLeft] = useState(30);
+    const [scanMode, setScanMode] = useState('auto'); // 'auto' | 'manual'
+    const [inputNonce, setInputNonce] = useState('');
+    const [claimAmount, setClaimAmount] = useState(null);
+    const [locationStatus, setLocationStatus] = useState('idle'); // idle, seeking, found, error
+    const [locationError, setLocationError] = useState(null);
+    const [manualLocation, setManualLocation] = useState('');
 
     useEffect(() => {
         const savedKeys = JSON.parse(localStorage.getItem('alacard_keys'));
         const savedToken = JSON.parse(localStorage.getItem('alacard_token'));
-        const savedSig = localStorage.getItem('alacard_token_sig');
+        const savedCitizenId = localStorage.getItem('alacard_citizen_id');
 
-        // Auto-login if keys exist
         if (savedKeys) setKeys(savedKeys);
         if (savedToken) setToken(savedToken);
-        if (savedSig) setTokenSignature(savedSig);
+        if (savedCitizenId) setCitizenId(savedCitizenId);
     }, []);
 
-    const handleReset = () => {
-        if (window.confirm("Switch Citizen? This will clear your current keys and token from this device.")) {
-            localStorage.removeItem('alacard_keys');
-            localStorage.removeItem('alacard_token');
-            localStorage.removeItem('alacard_token_sig');
-            setKeys(null);
-            setToken(null);
-            setTokenSignature(null);
-            setCitizenId('');
-            setNonce('');
-            setProof('');
-            setView('home');
-        }
-    };
 
-    const handleGenerateKeys = () => {
+    // -------------------------------------------------------------------------
+    // IDENTITY MANAGEMENT (Onboarding)
+    // -------------------------------------------------------------------------
+    const handleGenerateKeys = async () => {
         setLoading(true);
-        // Use async/await for key generation
-        (async () => {
-            try {
-                // Generate ECDSA P-256 Key Pair (Web Crypto)
-                const newKeys = await generateWalletKeyPair();
-
-                // Store keys in state and localStorage as JWK (Browser standard)
-                const keyData = {
-                    publicKeyJwk: newKeys.publicKey.jwk,
-                    privateKeyJwk: newKeys.privateKey.jwk,
-                    publicKeyRaw: newKeys.publicKey.raw // Needed for token binding
-                };
-
-                setKeys(keyData);
-                localStorage.setItem('alacard_keys', JSON.stringify(keyData));
-            } catch (e) {
-                console.error("Key generation failed:", e);
-                alert("Key generation failed: " + e.message);
-            } finally {
-                setLoading(false);
-            }
-        })();
+        try {
+            const newKeys = await generateWalletKeyPair();
+            const keyData = {
+                publicKeyJwk: newKeys.publicKey.jwk,
+                privateKeyJwk: newKeys.privateKey.jwk,
+                publicKeyRaw: newKeys.publicKey.raw
+            };
+            setKeys(keyData);
+            localStorage.setItem('alacard_keys', JSON.stringify(keyData));
+        } catch (e) {
+            alert("Key generation failed: " + e.message);
+        } finally {
+            setLoading(false);
+        }
     };
 
     const handleIssueToken = async () => {
@@ -72,410 +79,398 @@ const Wallet = () => {
         try {
             const res = await api.post('/issue-token', {
                 citizen_id: citizenId,
-                wallet_public_key: keys.publicKeyRaw // Send Raw Key for ECDSA Binding
+                wallet_public_key: keys.publicKeyRaw
             });
-            const { token, signature } = res.data;
-            // Token is now a JWT-like string (header.payload.signature)
-            // But we might receive an object if backend sends it wrapped?
-            // Backend sends: { token: "..." } where token is the string
-
+            const { token } = res.data;
             setToken(token);
-            setTokenSignature(signature); // Signature is embedded in token string now, but backend might send legacy output structure? 
-            // Wait, backend issue-token sends: res.json({ token: tokenResult.token }); 
-            // tokenResult.token IS the signed string. So we don't need separate signature really.
-
             localStorage.setItem('alacard_token', JSON.stringify(token));
-            localStorage.setItem('alacard_token_sig', signature); // Legacy, might not be needed but keep for safety
-            setView('home');
+            localStorage.setItem('alacard_citizen_id', citizenId);
+            setActiveTab('home'); // Go to dashboard
         } catch (err) {
             alert('Error: ' + (err.response?.data?.error || err.message));
         }
         setLoading(false);
     };
 
-    const handleGenerateProof = async () => {
-        if (!nonce) return;
-
+    // -------------------------------------------------------------------------
+    // PROOF GENERATION (QR Engine)
+    // -------------------------------------------------------------------------
+    const handleManualGenerate = async () => {
+        if (!inputNonce || !token || !keys) return;
         try {
-            // 1. Import Private Key from JWK (Async)
-            const privateKey = await importPrivateKeyJwk(keys.privateKeyJwk);
-
-            // 2. Generate ZKP Proof (Async)
-            const proofObj = await generateProof({
-                token: token, // The full token string
-                nonce: nonce,
-                walletPrivateKey: privateKey
+            const pk = await importPrivateKeyJwk(keys.privateKeyJwk);
+            const p = await generateProof({
+                token,
+                nonce: inputNonce, // Use the manual input
+                walletPrivateKey: pk
             });
 
-            setProof(JSON.stringify(proofObj, null, 2));
+            if (manualLocation && LOCATION_MAP[manualLocation]) {
+                const coords = LOCATION_MAP[manualLocation];
+                const payload = {
+                    proof: p,
+                    loc: { lat: coords.latitude, lng: coords.longitude },
+                    claim_amount: claimAmount
+                };
+                setProofStr(JSON.stringify(payload));
+                return;
+            }
+
+            // Get Location (Best Effort)
+            navigator.geolocation.getCurrentPosition(
+                (pos) => {
+                    const payload = {
+                        proof: p,
+                        loc: { lat: pos.coords.latitude, lng: pos.coords.longitude },
+                        claim_amount: claimAmount
+                    };
+                    setProofStr(JSON.stringify(payload));
+                },
+                (err) => {
+                    console.warn("Location denied:", err);
+                    // Fallback without location
+                    const payload = { proof: p, loc: null, claim_amount: claimAmount };
+                    setProofStr(JSON.stringify(payload));
+                }
+            );
         } catch (e) {
-            console.error(e);
             alert("Proof Generation Failed: " + e.message);
         }
     };
 
+    useEffect(() => {
+        let interval;
+        let timer;
+
+        if (viewMode === 'scanning' && token && keys) {
+
+            const generate = async () => {
+                setProofStr(''); // Clear old QR to prevents scanning stale/loading states
+                try {
+                    const pk = await importPrivateKeyJwk(keys.privateKeyJwk);
+                    // Use seconds for consistency with backend expectation if needed
+                    // But backend check allows 60s skew.
+                    const p = await generateProof({
+                        token,
+                        nonce: Math.floor(Date.now() / 1000).toString(),
+                        walletPrivateKey: pk
+                    });
+
+                    // Manual Override Logic
+                    if (manualLocation && LOCATION_MAP[manualLocation]) {
+                        setLocationStatus('found');
+                        setLocationError(null);
+                        const coords = LOCATION_MAP[manualLocation];
+                        const payload = {
+                            proof: p,
+                            loc: { lat: coords.latitude, lng: coords.longitude },
+                            claim_amount: claimAmount
+                        };
+                        setProofStr(JSON.stringify(payload));
+                        return; // Skip GPS
+                    }
+
+                    setLocationStatus('seeking');
+                    // Get Location for Proximity Check
+                    navigator.geolocation.getCurrentPosition(
+                        (pos) => {
+                            setLocationStatus('found');
+                            setLocationError(null);
+                            const payload = {
+                                proof: p,
+                                loc: { lat: pos.coords.latitude, lng: pos.coords.longitude },
+                                claim_amount: claimAmount
+                            };
+                            setProofStr(JSON.stringify(payload));
+                        },
+                        (err) => {
+                            console.warn("Location denied/unavailable");
+                            setLocationStatus('error');
+                            setLocationError(err.message + (window.isSecureContext ? '' : ' (Not HTTPS)'));
+                            setProofStr(JSON.stringify({ proof: p, loc: null, claim_amount: claimAmount }));
+                        },
+                        { timeout: 10000 } // Increased to 10s for better GPS fix
+                    );
+                } catch (e) {
+                    console.error(e);
+                }
+            };
+
+            generate();
+
+            interval = setInterval(() => {
+                generate();
+                setTimeLeft(30);
+            }, 30000);
+
+            timer = setInterval(() => {
+                setTimeLeft(prev => prev > 0 ? prev - 1 : 0);
+            }, 1000);
+        }
+
+        return () => {
+            clearInterval(interval);
+            clearInterval(timer);
+        };
+    }, [viewMode, token, keys, claimAmount, manualLocation]);
+
+    // -------------------------------------------------------------------------
+    // ROUTER
+    // -------------------------------------------------------------------------
+
     // 1. Onboarding Screen
     if (!keys) {
+        return <Onboarding onGenerate={handleGenerateKeys} loading={loading} />;
+    }
+
+    // 2. Link ID Screen (If keys exist but no token)
+    if (!token) {
         return (
-            <div className="min-h-[80vh] flex flex-col items-center justify-center p-6 text-center max-w-md mx-auto">
-                <div className="w-20 h-20 bg-blue-600 rounded-2xl flex items-center justify-center mb-6 shadow-2xl shadow-blue-500/30 ring-4 ring-blue-500/20">
-                    <Shield className="w-10 h-10 text-white" />
-                </div>
-                <h1 className="text-3xl font-bold mb-2">Secure Identity</h1>
-                <p className="text-gray-400 mb-8 leading-relaxed">
-                    Create your private digital wallet to store government credentials securely on your device.
-                </p>
-                <button
-                    onClick={handleGenerateKeys}
-                    disabled={loading}
-                    className="w-full bg-white text-blue-900 font-bold py-4 rounded-xl shadow-xl active:scale-95 transition-all text-lg"
-                >
-                    {loading ? 'Creating Secure Enclave...' : 'Create Wallet'}
-                </button>
-            </div>
+            <LinkIdentity
+                citizenId={citizenId}
+                setCitizenId={setCitizenId}
+                onSubmit={handleIssueToken}
+                loading={loading}
+            />
         );
     }
 
-    // 2. Main Wallet Screen
+    // 3. Main App Layout
     return (
-        <div className="max-w-md mx-auto min-h-[80vh] flex flex-col relative pb-20">
+        <div className="relative min-h-screen bg-slate-50">
 
-            {/* Header */}
-            <div className="flex justify-between items-center p-4 mb-4">
-                <div>
-                    <h2 className="text-xs font-bold text-gray-500 uppercase tracking-widest">My Wallet</h2>
-                    <h1 className="text-2xl font-bold text-white">Credentials</h1>
-                </div>
-                <div className="flex items-center gap-3">
-                    <button
-                        onClick={handleReset}
-                        className="p-2 bg-slate-800 rounded-full hover:bg-red-900/50 hover:text-red-400 transition-colors border border-slate-700"
-                        title="Switch Citizen / Reset App"
-                    >
-                        <LogOut size={18} />
-                    </button>
-                    <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center border border-slate-700">
-                        <User size={20} className="text-gray-400" />
-                    </div>
-                </div>
+            {/* Page Content */}
+            <div className={`transition-all ${viewMode === 'scanning' ? 'scale-95 opacity-50 blur-sm overflow-hidden h-screen' : ''}`}>
+                {activeTab === 'home' && (
+                    <CitizenHome onNavigate={(tab) => setActiveTab(tab)} />
+                )}
+
+                {(activeTab === 'scan' || activeTab === 'subsidy') && (
+                    <SubsidyWallet
+                        onNavigate={(tab) => setActiveTab(tab)}
+                        onScan={(amount) => {
+                            setClaimAmount(amount || null);
+                            setViewMode('scanning');
+                        }}
+                        token={token}
+                        citizenId={citizenId}
+                    />
+                )}
+
+                {/* Notifications -> History */}
+                {activeTab === 'notification' && (
+                    <CitizenHistory
+                        onNavigate={(tab) => setActiveTab(tab)}
+                        token={token}
+                    />
+                )}
+
+                {/* Profile -> New Profile Screen */}
+                {activeTab === 'profile' && (
+                    <Profile onNavigate={(tab) => setActiveTab(tab)} />
+                )}
             </div>
 
-            {/* Content Area */}
-            <div className="flex-1 px-4 space-y-6">
+            {/* Bottom Nav */}
+            <BottomNav activeTab={activeTab} onTabChange={setActiveTab} />
 
-                {/* Token Card */}
-                {!token ? (
-                    <div className="border-2 border-dashed border-slate-700 rounded-2xl p-8 flex flex-col items-center justify-center text-center space-y-4 hover:border-slate-500 transition-colors bg-slate-800/30">
-                        <div className="w-12 h-12 rounded-full bg-slate-700 flex items-center justify-center">
-                            <Plus className="text-gray-400" />
-                        </div>
-                        <div>
-                            <h3 className="font-bold text-white">No Credentials</h3>
-                            <p className="text-sm text-gray-500 mt-1">Add your government ID to get started.</p>
-                        </div>
-                        <button
-                            onClick={() => setView('add-token')}
-                            className="px-6 py-2 bg-blue-600 rounded-full text-white font-bold text-sm shadow-lg shadow-blue-900/50"
-                        >
-                            Add Credential
-                        </button>
-                    </div>
-                ) : (
-                    <div className="relative group perspective-1000">
-                        {/* The Digital Card */}
-                        <div className={`
-              relative w-full aspect-[1.586] rounded-2xl p-6 flex flex-col justify-between 
-              bg-gradient-to-br from-blue-600 via-blue-700 to-indigo-900 
-              shadow-2xl shadow-blue-900/50 text-white overflow-hidden
-              transition-all duration-500 transform
-              ${view === 'prove' ? 'scale-95 opacity-50 blur-[2px]' : 'scale-100 opacity-100'}
-            `}>
-                            {/* Pattern Overlay */}
-                            <div className="absolute inset-0 opacity-10 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')]"></div>
+            {/* QR Overlay (Proof Generator) */}
+            {viewMode === 'scanning' && (
+                <div className="fixed inset-0 z-50 flex flex-col items-center justify-end sm:justify-center bg-black/90 animate-in fade-in duration-200 backdrop-blur-sm">
+                    {/* Close Area */}
+                    <div className="absolute inset-0" onClick={() => { setViewMode('default'); setClaimAmount(null); }}></div>
 
-                            <div className="relative z-10 flex justify-between items-start">
-                                <div className="flex items-center gap-2">
-                                    <div className="p-1.5 bg-white/20 rounded-lg backdrop-blur-sm">
-                                        <Shield size={16} />
-                                    </div>
-                                    <span className="font-bold tracking-wide text-sm">GOV.ID</span>
-                                </div>
-                                <span className="px-2 py-1 bg-green-500/20 text-green-200 text-[10px] font-bold rounded backdrop-blur-md border border-green-500/30">
-                                    VERIFIED
-                                </span>
+                    <div className="relative w-full max-w-md bg-white rounded-t-3xl sm:rounded-3xl p-6 pb-10 sm:pb-6 shadow-2xl animate-in slide-in-from-bottom-10">
+                        <div className="w-12 h-1 bg-slate-200 rounded-full mx-auto mb-6"></div>
+
+                        <div className="flex justify-between items-center mb-6">
+                            <div>
+                                <h3 className="text-xl font-bold text-slate-900">Scan to Verify</h3>
+                                <p className="text-sm text-slate-500 mb-1">Present this QR code to the terminal</p>
+                                <p className="text-[10px] text-slate-400 font-mono">v1.2 Patched</p>
+                                {claimAmount && <p className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded w-fit">Redeem Request: RM {claimAmount}</p>}
                             </div>
-
-                            <div className="relative z-10">
-                                <p className="text-blue-200 text-xs font-medium mb-1">Subsidy Type</p>
-                                <h3 className="text-xl font-bold tracking-tight">{token ? (parseToken(token).payload.elig ? 'Standard Subsidy' : 'Not Eligible') : '...'}</h3>
-                            </div>
-
-                            <div className="relative z-10 flex justify-between items-end">
-                                <div>
-                                    <p className="text-blue-300 text-[10px]">Holder ID</p>
-                                    <p className="font-mono text-sm opacity-80">
-                                        {(() => {
-                                            const p = parseToken(token).payload;
-                                            return `${p.jti.slice(0, 4)} •••• •••• ${p.jti.slice(-4)}`;
-                                        })()}
-                                    </p>
-                                </div>
-                                <div className="text-right">
-                                    <p className="text-blue-300 text-[10px]">Expires</p>
-                                    <p className="text-sm font-medium">{new Date(parseToken(token).payload.exp * 1000).toLocaleDateString()}</p>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Actions for Card */}
-                        {view === 'home' && (
-                            <div className="mt-6">
-                                <button
-                                    onClick={() => setView('prove')}
-                                    className="w-full bg-white text-slate-900 font-bold py-3 rounded-xl shadow-lg flex items-center justify-center gap-2 active:scale-95 transition-all text-sm mb-3"
-                                >
-                                    <Scan size={18} />
-                                    Present ID / Verify
-                                </button>
-                            </div>
-                        )}
-                    </div>
-                )}
-
-                {/* Add Token Flow */}
-                {view === 'add-token' && (
-                    <div className="animate-in slide-in-from-bottom-10 fade-in duration-300 bg-slate-800 rounded-2xl p-6 border border-slate-700">
-                        <h3 className="font-bold text-lg mb-4">Link National ID</h3>
-                        <input
-                            className="input-field mb-4 bg-slate-900 text-lg"
-                            placeholder="Ex. CITIZEN_001"
-                            value={citizenId}
-                            onChange={e => setCitizenId(e.target.value)}
-                            autoFocus
-                        />
-                        <div className="flex gap-3">
-                            <button
-                                onClick={() => setView('home')}
-                                className="flex-1 py-3 text-sm font-bold text-gray-400 hover:text-white"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={handleIssueToken}
-                                disabled={loading}
-                                className="flex-1 btn-primary py-3 text-sm flex items-center justify-center gap-2"
-                            >
-                                {loading ? 'Linking...' : 'Link Identity'} <ChevronRight size={16} />
+                            <button onClick={() => { setViewMode('default'); setClaimAmount(null); }} className="p-2 bg-slate-100 rounded-full">
+                                <X size={20} className="text-slate-500" />
                             </button>
                         </div>
-                    </div>
-                )}
 
-                {/* Prove Flow */}
-                {view === 'prove' && (
-                    <div className="animate-in slide-in-from-bottom-20 fade-in duration-300 fixed bottom-0 left-0 right-0 bg-slate-900 border-t border-slate-700 p-6 rounded-t-3xl shadow-[0_-10px_40px_rgba(0,0,0,0.5)] z-50 max-w-md mx-auto">
-                        <div className="w-12 h-1 bg-slate-700 rounded-full mx-auto mb-6"></div>
-
-                        <div className="flex justify-center mb-6 bg-slate-800 p-1 rounded-xl w-fit mx-auto">
+                        {/* Mode Toggle */}
+                        <div className="flex justify-center mb-6 bg-slate-100 p-1 rounded-xl w-fit mx-auto">
                             <button
-                                onClick={() => setNonce('') /* Reset nonce for passive */}
-                                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${!nonce ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
+                                onClick={() => { setScanMode('auto'); setProofStr(''); }}
+                                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${scanMode === 'auto' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}
                             >
                                 Auto (Passive)
                             </button>
                             <button
-                                onClick={() => setNonce('MANUAL')} // Hack to switch mode UI
-                                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${nonce ? 'bg-blue-600 text-white shadow-lg' : 'text-gray-400 hover:text-white'}`}
+                                onClick={() => { setScanMode('manual'); setProofStr(''); setInputNonce(''); }}
+                                className={`px-4 py-2 rounded-lg text-sm font-bold transition-all ${scanMode === 'manual' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}
                             >
                                 Manual Input
                             </button>
                         </div>
 
-                        {!nonce ? (
-                            // PASSIVE MODE (Auto-Refresh)
-                            <PassiveProofGenerator
-                                token={token}
-                                privateKeyJwk={keys.privateKeyJwk}
-                                onClose={() => setView('home')}
-                            />
+                        {/* CONTENT AREA */}
+                        {scanMode === 'auto' ? (
+                            <>
+                                {/* Manual Location Override */}
+                                <div className="mb-4">
+                                    <select
+                                        value={manualLocation}
+                                        onChange={(e) => setManualLocation(e.target.value)}
+                                        className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs font-bold text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    >
+                                        <option value="">📡 Mode: Auto-GPS (Real)</option>
+                                        <option disabled>--- Manual Override ---</option>
+                                        {Object.keys(LOCATION_MAP).map(state => (
+                                            <option key={state} value={state}>📍 Force: {state}</option>
+                                        ))}
+                                    </select>
+                                </div>
+
+                                {/* QR Box (Auto) */}
+                                <div className="bg-slate-50 p-6 rounded-2xl flex flex-col items-center justify-center border border-slate-100 mb-6">
+                                    {proofStr ? (
+                                        <QRCodeCanvas value={proofStr} size={250} />
+                                    ) : (
+                                        <div className="w-[250px] h-[250px] flex items-center justify-center text-slate-400 font-medium animate-pulse">
+                                            Generating Secure Proof...
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Timer */}
+                                <div className="flex items-center justify-between bg-blue-50 p-4 rounded-xl text-blue-700">
+                                    <div className="flex items-center gap-2">
+                                        <div className="w-2 h-2 bg-blue-500 rounded-full animate-ping"></div>
+                                        <span className="font-bold text-sm">Live Token</span>
+                                    </div>
+                                    <span className="font-mono font-bold">{timeLeft}s</span>
+                                </div>
+
+                                {/* Debug Location Status */}
+                                <div className="mt-4 p-3 rounded-xl bg-slate-100 text-xs text-center border border-slate-200">
+                                    <p className="font-bold text-slate-500 mb-1">GPS Status</p>
+                                    <div className={`font-mono font-bold mb-1 ${locationStatus === 'found' ? 'text-green-600' : locationStatus === 'error' ? 'text-red-500' : 'text-blue-500 animate-pulse'}`}>
+                                        {locationStatus === 'found' && (manualLocation ? 'FORCED (MANUAL)' : 'CONNECTED')}
+                                        {locationStatus === 'error' && 'FAILED'}
+                                        {(locationStatus === 'seeking' || locationStatus === 'idle') && 'SEARCHING...'}
+                                    </div>
+                                    {locationStatus === 'error' && (
+                                        <p className="text-red-500 text-[10px]">{locationError}</p>
+                                    )}
+                                    <p className="text-[9px] text-slate-400 mt-2">
+                                        (Requires HTTPS/Localhost + Permission)
+                                    </p>
+                                </div>
+                            </>
                         ) : (
-                            // MANUAL MODE
-                            <ManualProofGenerator
-                                token={token}
-                                privateKeyJwk={keys.privateKeyJwk}
-                                onBack={() => setNonce('')}
-                                onClose={() => { setView('home'); setNonce(''); }}
-                            />
+
+                            <>
+                                {/* Manual Input Form */}
+                                <div className="space-y-4 mb-6">
+                                    {!proofStr ? (
+                                        <>
+                                            <div className="bg-slate-50 p-6 rounded-2xl border border-dashed border-slate-300 flex flex-col items-center justify-center text-center">
+                                                <Scan size={32} className="text-slate-400 mb-2" />
+                                                <p className="text-sm text-slate-500 mb-4">Enter the Challenge Code displayed on the Verification Terminal</p>
+                                                <input
+                                                    className="w-full bg-white border border-slate-300 rounded-xl py-3 px-4 text-center font-mono font-bold text-xl tracking-widest focus:outline-none focus:ring-2 focus:ring-blue-500 uppercase"
+                                                    placeholder="CODE"
+                                                    value={inputNonce}
+                                                    onChange={e => setInputNonce(e.target.value)}
+                                                />
+                                            </div>
+                                            <button
+                                                onClick={handleManualGenerate}
+                                                disabled={!inputNonce}
+                                                className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl shadow-lg active:scale-95 transition-all"
+                                            >
+                                                Generate Proof
+                                            </button>
+                                        </>
+                                    ) : (
+                                        // Resulting QR for Manual
+                                        <div className="bg-slate-50 p-6 rounded-2xl flex flex-col items-center justify-center border border-slate-100 mb-4">
+                                            <QRCodeCanvas value={proofStr} size={200} />
+
+                                            <div className="w-full mt-4">
+                                                <p className="text-xs font-bold text-slate-500 mb-1">Proof JSON (for manual testing):</p>
+                                                <textarea
+                                                    readOnly
+                                                    className="w-full h-24 text-[10px] bg-slate-200 rounded p-2 font-mono text-slate-700"
+                                                    value={proofStr}
+                                                />
+                                                <button
+                                                    onClick={() => navigator.clipboard.writeText(proofStr)}
+                                                    className="flex items-center justify-center gap-2 w-full mt-2 bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold py-2 rounded-lg text-xs"
+                                                >
+                                                    <Copy size={12} /> Copy Proof JSON
+                                                </button>
+                                            </div>
+
+                                            <button onClick={() => setProofStr('')} className="mt-6 text-sm text-blue-600 font-bold">
+                                                Enter Different Code
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            </>
                         )}
                     </div>
-                )}
-            </div>
-        </div>
-    );
-};
-
-// Sub-component for Passive Generation to handle interval cleanly
-const PassiveProofGenerator = ({ token, privateKeyJwk, onClose }) => {
-    const [proof, setProof] = useState('');
-    const [timeLeft, setTimeLeft] = useState(30);
-    const [showFullScreenQR, setShowFullScreenQR] = useState(false);
-
-    useEffect(() => {
-        let mounted = true;
-
-        async function gen() {
-            if (!mounted) return;
-            try {
-                const pk = await importPrivateKeyJwk(privateKeyJwk);
-                // Date.now() is ms, proof expects ms string in new short format? 
-                // Wait, backend uses `parseInt(pNonce)`. `now()` in utils usually returns seconds?
-                // Let's check `backend/crypto/utils.js` or `proof.js` usage.
-                // In `proof.js`, `timestamp: now()`. `now()` is usually seconds in this codebase?
-                // Let's verify `now()` implementation in frontend/utils.js vs backend.
-                // In Step 667 (frontend proof.js), it imports `now` from `./utils.js`.
-                // In Step 668 (backend proof.js), it imports `now` from `./utils`.
-
-                // If I look at `Wallet.jsx` previously: `nonce: Date.now().toString()`.
-                // Date.now() is MILLISECONDS.
-                // Backend: `const proofTime = parseInt(pNonce); ... const currentTime = now();`
-                // If `now()` in backend is SECONDS (common in JWT/crypto), and `proofTime` is MILLISECONDS, this check `Math.abs(currentTime - proofTime) > 30` will ALWAYS fail (huge difference).
-
-                // CRITICAL CHECK: What is `now()`?
-                // I will assume standard seconds for `now()` in crypto contexts, but `Date.now()` is ms.
-                // I should probably check `frontend/src/crypto/utils.js` first or just safe-guard by sending Seconds if backend expects Seconds, or MS if MS.
-                // But wait, the previous code was working? "The scanner seem on but it didnt get to scan".
-                // Maybe it failed validation silently? Or `now()` returns MS?
-
-                // Let's safe-guard by fixing the nonce generation to match backend expectation.
-                // But first, let's just do the 30s change, and fixes if needed.
-
-                const p = await generateProof({
-                    token,
-                    nonce: Math.floor(Date.now() / 1000).toString(),
-                    walletPrivateKey: pk
-                });
-                if (mounted) setProof(JSON.stringify(p));
-            } catch (e) {
-                console.error("Auto-proof failed", e);
-            }
-        }
-
-        // Initial generation
-        gen();
-
-        // Interval
-        const interval = setInterval(() => {
-            gen();
-            setTimeLeft(30);
-        }, 30000);
-
-        // Countdown timer for UX
-        const timer = setInterval(() => {
-            setTimeLeft(prev => prev > 0 ? prev - 1 : 0);
-        }, 1000);
-
-        return () => {
-            mounted = false;
-            clearInterval(interval);
-            clearInterval(timer);
-        };
-    }, [token, privateKeyJwk]);
-
-    return (
-        <div className="text-center">
-            <h3 className="font-bold text-xl mb-1">Show to Terminal</h3>
-
-            <div className="bg-white p-4 rounded-xl shadow-inner mb-6 flex justify-center cursor-pointer mx-auto w-fit" onClick={() => setShowFullScreenQR(true)}>
-                {proof ?
-                    <QRCodeCanvas value={proof} size={300} level="L" includeMargin={true} />
-                    :
-                    <div className="w-[300px] h-[300px] flex items-center justify-center text-black">Generating...</div>
-                }
-            </div>
-
-            <p className="text-gray-500 text-sm mb-6 animate-pulse">
-                Refreshes in {timeLeft}s <span className="text-blue-500 font-bold block mt-1">(Tap QR to Enlarge)</span>
-            </p>
-
-            {/* Fullscreen QR Modal */}
-            {showFullScreenQR && (
-                <div className="fixed inset-0 z-50 bg-black bg-opacity-95 flex flex-col items-center justify-center p-4" onClick={() => setShowFullScreenQR(false)}>
-                    <h3 className="text-white text-xl mb-8 font-bold">Present to Scanner</h3>
-                    <div className="bg-white p-4 rounded-3xl">
-                        <QRCodeCanvas value={proof} size={window.innerWidth > 400 ? 400 : window.innerWidth - 60} level="L" includeMargin={true} />
-                    </div>
-                    <p className="text-gray-400 mt-8 text-sm">Tap anywhere to close</p>
                 </div>
             )}
-
-            <button
-                onClick={onClose}
-                className="w-full py-4 rounded-xl font-bold text-slate-400 bg-slate-800"
-            >
-                Close
-            </button>
         </div>
     );
 };
 
-const ManualProofGenerator = ({ token, privateKeyJwk, onBack, onClose }) => {
-    const [inputNonce, setInputNonce] = useState('');
-    const [proof, setProof] = useState('');
+// -------------------------------------------------------------------------
+// SUB-COMPONENTS (Legacy Onboarding)
+// -------------------------------------------------------------------------
 
-    const handleGen = async () => {
-        if (!inputNonce) return;
-        try {
-            const pk = await importPrivateKeyJwk(privateKeyJwk);
-            const p = await generateProof({
-                token,
-                nonce: inputNonce,
-                walletPrivateKey: pk
-            });
-            setProof(JSON.stringify(p, null, 2));
-        } catch (e) {
-            alert(e.message);
-        }
-    };
+const Onboarding = ({ onGenerate, loading }) => (
+    <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-center text-white">
+        <div className="w-24 h-24 bg-blue-600 rounded-3xl flex items-center justify-center mb-8 shadow-2xl shadow-blue-500/30 ring-4 ring-blue-500/20">
+            <Shield className="w-12 h-12 text-white" />
+        </div>
+        <h1 className="text-3xl font-bold mb-3">Secure Identity</h1>
+        <p className="text-slate-400 mb-12 leading-relaxed max-w-xs">
+            Create your private digital wallet to store government credentials securely on your device.
+        </p>
+        <button
+            onClick={onGenerate}
+            disabled={loading}
+            className="w-full max-w-xs bg-white text-blue-900 font-bold py-4 rounded-2xl shadow-xl active:scale-95 transition-all text-lg"
+        >
+            {loading ? 'Creating Secure Enclave...' : 'Create Wallet'}
+        </button>
+    </div>
+);
 
-    if (proof) {
-        return (
-            <>
-                <div className="text-center mb-6">
-                    <div className="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mx-auto mb-3 text-green-400">
-                        <Check size={32} />
-                    </div>
-                    <h3 className="font-bold text-xl">Proof Generated</h3>
-                </div>
-                <div className="bg-white p-4 rounded-xl mb-6 flex justify-center">
-                    <QRCodeCanvas value={proof} size={200} />
-                </div>
-                <button onClick={() => navigator.clipboard.writeText(proof)} className="w-full py-4 rounded-xl font-bold text-slate-900 bg-white mb-3 flex items-center justify-center gap-2">
-                    <Copy size={18} /> Copy JSON
-                </button>
-                <button onClick={onClose} className="w-full py-3 font-bold text-gray-500">Done</button>
-            </>
-        );
-    }
+const LinkIdentity = ({ citizenId, setCitizenId, onSubmit, loading }) => (
+    <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white text-center">
+        <h2 className="text-2xl font-bold mb-2">Link National ID</h2>
+        <p className="text-slate-400 mb-8 text-sm">Enter your Citizen ID (e.g., CITIZEN_001) to fetch your entitlements.</p>
 
-    return (
-        <>
-            <h3 className="font-bold text-center text-xl mb-2">Manual Verification</h3>
-            <div className="bg-slate-800 p-2 rounded-xl mb-6 flex items-center border border-slate-600 focus-within:ring-2 focus-within:ring-blue-500">
-                <Scan className="text-gray-400 ml-2" />
-                <input
-                    className="bg-transparent border-none text-white w-full py-3 px-3 focus:outline-none font-mono text-center tracking-widest text-lg placeholder-gray-600"
-                    placeholder="ENTER CHALLENGE"
-                    value={inputNonce}
-                    onChange={e => setInputNonce(e.target.value)}
-                    autoFocus
-                />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-                <button onClick={onBack} className="py-3 rounded-xl font-bold text-slate-400 bg-slate-800">Back</button>
-                <button onClick={handleGen} className="py-3 rounded-xl font-bold text-white bg-blue-600">Generate</button>
-            </div>
-        </>
-    );
-};
+        <div className="w-full max-w-xs space-y-4">
+            <input
+                className="w-full bg-slate-800 border border-slate-700 rounded-xl py-4 px-4 text-center text-xl font-bold focus:outline-none focus:border-blue-500 transition-colors placeholder-slate-600"
+                placeholder="CITIZEN_001"
+                value={citizenId}
+                onChange={e => setCitizenId(e.target.value)}
+                autoFocus
+            />
+            <button
+                onClick={onSubmit}
+                disabled={loading}
+                className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-4 rounded-xl shadow-lg shadow-blue-900/50 active:scale-95 transition-all"
+            >
+                {loading ? 'Verifying...' : 'Link Identity'}
+            </button>
+        </div>
+    </div>
+);
 
 export default Wallet;
+

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import api from '../utils/api';
-import { TerminalSquare, CheckCircle, XCircle, RefreshCw, ShieldCheck, AlertCircle } from 'lucide-react';
+import { TerminalSquare, CheckCircle, XCircle, RefreshCw, ShieldCheck, AlertCircle, MapPin, Fuel } from 'lucide-react';
 import { Html5QrcodeScanner, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 
 const Terminal = () => {
@@ -10,9 +10,16 @@ const Terminal = () => {
     const [loading, setLoading] = useState(false);
     const [processedProof, setProcessedProof] = useState('');
     const [cameraError, setCameraError] = useState('');
-    const [debugLog, setDebugLog] = useState(`API: ${api.defaults.baseURL}`); // DEBUG STATE
+    const [debugLog, setDebugLog] = useState(`API: ${api.defaults.baseURL}`);
     const [location, setLocation] = useState({ state: 'Selangor', city: 'Petaling Jaya' });
     const [riskData, setRiskData] = useState(null);
+
+    // Claim State
+    const [claimAmount, setClaimAmount] = useState(50);
+    const [isUserRequested, setIsUserRequested] = useState(false);
+    const [claimStatus, setClaimStatus] = useState(null); // 'claiming', 'success', 'error'
+    const [claimResult, setClaimResult] = useState(null);
+
     const scannerRef = useRef(null);
 
     const locations = [
@@ -107,6 +114,8 @@ const Terminal = () => {
             setResult(null);
             setProcessedProof(''); // Reset processed proof
             setRiskData(null);
+            setClaimStatus(null);
+            setClaimResult(null);
         } catch (err) {
             console.error("Failed to get challenge:", err);
             alert("Network Error: Could not reach backend challenge service.");
@@ -121,13 +130,50 @@ const Terminal = () => {
         if (proofInput === processedProof) return;
         setProcessedProof(proofInput);
 
+        console.log("Raw QR Input:", proofInput);
+
         setLoading(true);
         try {
             let proof;
-            try {
-                proof = JSON.parse(proofInput);
-            } catch (e) {
-                throw new Error("Invalid Proof Format (JSON expected)");
+            let walletLoc = null;
+            let requestedAmount = null;
+
+            let json = JSON.parse(proofInput);
+
+            // Handle double-stringified JSON (common in QR scanning of strings)
+            if (typeof json === 'string') {
+                console.log("Detected double-encoded JSON, parsing again...");
+                json = JSON.parse(json);
+            }
+
+            // 1. Extract Proof
+            if (json.proof) {
+                proof = json.proof;
+            } else {
+                proof = json; // Legacy direct proof
+            }
+
+            // 2. Extract Location (Support multiple keys)
+            if (json.loc) walletLoc = json.loc;
+            else if (json.wallet_location) walletLoc = json.wallet_location;
+            else if (json.location) walletLoc = json.location;
+
+            // 3. Normalize Location to { lat, lng }
+            if (walletLoc) {
+                if (walletLoc.latitude && !walletLoc.lat) {
+                    walletLoc = { lat: walletLoc.latitude, lng: walletLoc.longitude };
+                }
+            }
+
+            // 4. Extract Amount
+            if (json.claim_amount) requestedAmount = json.claim_amount;
+
+            if (requestedAmount && !isNaN(parseFloat(requestedAmount))) {
+                setClaimAmount(parseFloat(requestedAmount));
+                setIsUserRequested(true);
+            } else {
+                setClaimAmount(50); // Default
+                setIsUserRequested(false);
             }
 
             // Client-side check: Ensure the proof corresponds to THIS session's nonce
@@ -142,10 +188,16 @@ const Terminal = () => {
 
             // Send to backend for formal verification and audit logging
             // The backend performs the same PKI checks we would do locally
+            // The backend performs the same PKI checks we would do locally
+            console.log("sending to backend:", { walletLoc, location });
             const res = await api.post('/verify-token', {
-                proof: proof, // Wrap in proof object as expected by server
+                proof: proof,
                 terminal_id: 'TERM-001',
-                location: location // Send selected location
+                location: location, // Terminal Location
+                wallet_location: walletLoc, // Wallet Location (from QR)
+                // Fallback Primitives
+                wallet_lat: walletLoc?.lat,
+                wallet_lng: walletLoc?.lng
             });
 
             setRiskData(res.data.risk);
@@ -167,27 +219,87 @@ const Terminal = () => {
         setLoading(false);
     };
 
+    const handleClaim = async () => {
+        if (!processedProof) return;
+        setClaimStatus('claiming');
+        try {
+            const json = JSON.parse(processedProof);
+            // Support both wrapper format and direct format
+            const proofObj = json.proof ? ((typeof json.proof === 'string') ? JSON.parse(json.proof) : json.proof) : json;
+
+            // Fallback: Check 't' (standard) or 'token' (legacy/direct)
+            let actualToken;
+            if (proofObj.t) actualToken = proofObj.t;
+            else if (proofObj.token) actualToken = proofObj.token;
+            else throw new Error("Could not extract token from proof");
+
+            const res = await api.post('/claim-subsidy', {
+                token: actualToken,
+                amount: parseFloat(claimAmount)
+            });
+
+            setClaimResult(res.data);
+            setClaimStatus('success');
+        } catch (err) {
+            console.error(err);
+            setClaimStatus('error');
+            alert(err.response?.data?.error || "Claim Failed");
+        }
+    };
+
     return (
         <div className="p-6 max-w-lg mx-auto space-y-8 animate-in slide-in-from-bottom-5 duration-500">
             <h1 className="text-3xl font-bold text-center bg-clip-text text-transparent bg-gradient-to-r from-green-400 to-teal-500">
                 Verification Terminal
             </h1>
+            <p className="text-[10px] text-center text-slate-500 font-mono">v1.2 - Debug Patch Loaded</p>
 
             {/* Location Selector */}
-            <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700 flex justify-between items-center">
-                <span className="text-gray-400 text-sm">Terminal Location:</span>
-                <select
-                    value={location.state}
-                    onChange={(e) => {
-                        const sel = locations.find(l => l.state === e.target.value);
-                        setLocation(sel);
-                    }}
-                    className="bg-slate-900 text-white border border-slate-600 rounded px-2 py-1 text-sm outline-none focus:border-green-500"
-                >
-                    {locations.map(l => (
-                        <option key={l.state} value={l.state}>{l.city}, {l.state}</option>
-                    ))}
-                </select>
+            <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700 flex flex-col gap-2">
+                <div className="flex justify-between items-center">
+                    <span className="text-gray-400 text-sm">Terminal Location:</span>
+                    {location.latitude ? (
+                        <span className="text-green-400 text-xs font-mono">
+                            GPS: {location.latitude.toFixed(4)}, {location.longitude.toFixed(4)}
+                        </span>
+                    ) : null}
+                </div>
+
+                <div className="flex gap-2">
+                    <select
+                        value={location.state === 'Custom' ? '' : location.state}
+                        onChange={(e) => {
+                            const sel = locations.find(l => l.state === e.target.value);
+                            if (sel) setLocation(sel);
+                        }}
+                        className="flex-1 bg-slate-900 text-white border border-slate-600 rounded px-2 py-2 text-sm outline-none focus:border-green-500"
+                    >
+                        <option value="" disabled>-- Select Simulation --</option>
+                        {locations.map(l => (
+                            <option key={l.state} value={l.state}>{l.city}, {l.state}</option>
+                        ))}
+                    </select>
+
+                    <button
+                        onClick={() => {
+                            navigator.geolocation.getCurrentPosition(
+                                (pos) => {
+                                    setLocation({
+                                        state: 'Custom', // Marker for frontend logic
+                                        city: 'Detected Location',
+                                        latitude: pos.coords.latitude,
+                                        longitude: pos.coords.longitude
+                                    });
+                                },
+                                (err) => alert("Location Access Denied")
+                            );
+                        }}
+                        className="bg-blue-600 hover:bg-blue-500 text-white p-2 rounded transition-colors"
+                        title="Use Real Device Location"
+                    >
+                        <MapPin size={18} />
+                    </button>
+                </div>
             </div>
 
             <div className="glass-panel p-6">
@@ -317,8 +429,65 @@ const Terminal = () => {
                     )}
 
                     {result === 'ELIGIBLE' && (
-                        <div className="mt-4 p-2 bg-black/20 rounded text-xs text-green-300 font-mono">
-                            Audit Logged: {new Date().toLocaleTimeString()}
+                        <div className="mt-6 border-t border-slate-700 pt-6">
+                            {!claimStatus ? (
+                                <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2">
+                                    <h3 className="text-lg font-bold text-white flex items-center justify-center gap-2">
+                                        <Fuel size={20} className="text-yellow-400" /> Pump Authorization
+                                    </h3>
+
+
+
+                                    <div className={`flex items-center justify-center gap-2 bg-slate-900 p-2 rounded border border-slate-700 ${isUserRequested ? 'opacity-50 pointer-events-none' : ''}`}>
+                                        <span className="text-gray-400 text-sm">Amount: RM</span>
+                                        <input
+                                            type="number"
+                                            value={claimAmount}
+                                            readOnly={isUserRequested}
+                                            onChange={e => setClaimAmount(e.target.value)}
+                                            className="bg-transparent w-20 text-xl font-bold text-white outline-none border-b border-gray-600 focus:border-yellow-400 transition-colors"
+                                        />
+                                    </div>
+
+                                    <button
+                                        onClick={handleClaim}
+                                        className="w-full btn-primary bg-gradient-to-r from-yellow-600 to-orange-600 hover:from-yellow-500 hover:to-orange-500 text-white font-bold py-3 rounded-lg shadow-lg transform active:scale-95 transition-all"
+                                    >
+                                        Authorize Pump
+                                    </button>
+                                </div>
+                            ) : claimStatus === 'claiming' ? (
+                                <div className="text-center py-4 text-yellow-500 animate-pulse">
+                                    Processing Claim...
+                                </div>
+                            ) : claimStatus === 'success' ? (
+                                <div className="bg-green-500/20 border border-green-500/50 p-4 rounded-lg animate-in zoom-in">
+                                    <h3 className="text-xl font-bold text-green-300 mb-1">Transaction Approved</h3>
+                                    <p className="text-white text-sm mb-2">Subsidy Claimed Successfully</p>
+                                    <div className="font-mono text-xs text-green-200 opacity-80">
+                                        Remaining Quota: RM {claimResult?.remaining?.toFixed(2)}
+                                    </div>
+                                    <button
+                                        onClick={() => { setNonce(''); setProofInput(''); setProcessedProof(''); setResult(null); setClaimStatus(null); }}
+                                        className="mt-4 text-xs bg-green-900/50 hover:bg-green-800 text-green-200 py-2 px-4 rounded border border-green-700 transition-colors"
+                                    >
+                                        Start Next Session
+                                    </button>
+                                </div>
+                            ) : (
+                                <button
+                                    onClick={() => setClaimStatus(null)}
+                                    className="text-red-400 text-sm underline hover:text-red-300"
+                                >
+                                    Transaction Failed. Try Again.
+                                </button>
+                            )}
+
+                            {result === 'ELIGIBLE' && !claimStatus && (
+                                <div className="mt-4 p-2 bg-black/20 rounded text-xs text-green-300 font-mono">
+                                    Audit Logged: {new Date().toLocaleTimeString()}
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
