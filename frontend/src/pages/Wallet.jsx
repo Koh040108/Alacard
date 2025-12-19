@@ -11,6 +11,15 @@ import CitizenHistory from './citizen/History';
 import Profile from './citizen/Profile';
 import BottomNav from './citizen/BottomNav';
 
+const LOCATION_MAP = {
+    'Selangor': { latitude: 3.107, longitude: 101.606 },
+    'Perak': { latitude: 4.597, longitude: 101.090 },
+    'Penang': { latitude: 5.414, longitude: 100.311 },
+    'Johor': { latitude: 1.485, longitude: 103.761 },
+    'Sabah': { latitude: 5.980, longitude: 116.073 },
+    'Sarawak': { latitude: 1.553, longitude: 110.359 }
+};
+
 const Wallet = () => {
     // Global State
     const [keys, setKeys] = useState(null);
@@ -30,6 +39,7 @@ const Wallet = () => {
     const [claimAmount, setClaimAmount] = useState(null);
     const [locationStatus, setLocationStatus] = useState('idle'); // idle, seeking, found, error
     const [locationError, setLocationError] = useState(null);
+    const [manualLocation, setManualLocation] = useState('');
 
     useEffect(() => {
         const savedKeys = JSON.parse(localStorage.getItem('alacard_keys'));
@@ -95,6 +105,17 @@ const Wallet = () => {
                 walletPrivateKey: pk
             });
 
+            if (manualLocation && LOCATION_MAP[manualLocation]) {
+                const coords = LOCATION_MAP[manualLocation];
+                const payload = {
+                    proof: p,
+                    loc: { lat: coords.latitude, lng: coords.longitude },
+                    claim_amount: claimAmount
+                };
+                setProofStr(JSON.stringify(payload));
+                return;
+            }
+
             // Get Location (Best Effort)
             navigator.geolocation.getCurrentPosition(
                 (pos) => {
@@ -134,6 +155,20 @@ const Wallet = () => {
                         nonce: Math.floor(Date.now() / 1000).toString(),
                         walletPrivateKey: pk
                     });
+
+                    // Manual Override Logic
+                    if (manualLocation && LOCATION_MAP[manualLocation]) {
+                        setLocationStatus('found');
+                        setLocationError(null);
+                        const coords = LOCATION_MAP[manualLocation];
+                        const payload = {
+                            proof: p,
+                            loc: { lat: coords.latitude, lng: coords.longitude },
+                            claim_amount: claimAmount
+                        };
+                        setProofStr(JSON.stringify(payload));
+                        return; // Skip GPS
+                    }
 
                     setLocationStatus('seeking');
                     // Get Location for Proximity Check
@@ -177,7 +212,7 @@ const Wallet = () => {
             clearInterval(interval);
             clearInterval(timer);
         };
-    }, [viewMode, token, keys, claimAmount]);
+    }, [viewMode, token, keys, claimAmount, manualLocation]);
 
     // -------------------------------------------------------------------------
     // ROUTER
@@ -252,6 +287,7 @@ const Wallet = () => {
                             <div>
                                 <h3 className="text-xl font-bold text-slate-900">Scan to Verify</h3>
                                 <p className="text-sm text-slate-500 mb-1">Present this QR code to the terminal</p>
+                                <p className="text-[10px] text-slate-400 font-mono">v1.2 Patched</p>
                                 {claimAmount && <p className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-1 rounded w-fit">Redeem Request: RM {claimAmount}</p>}
                             </div>
                             <button onClick={() => { setViewMode('default'); setClaimAmount(null); }} className="p-2 bg-slate-100 rounded-full">
@@ -278,6 +314,21 @@ const Wallet = () => {
                         {/* CONTENT AREA */}
                         {scanMode === 'auto' ? (
                             <>
+                                {/* Manual Location Override */}
+                                <div className="mb-4">
+                                    <select
+                                        value={manualLocation}
+                                        onChange={(e) => setManualLocation(e.target.value)}
+                                        className="w-full bg-white border border-slate-300 rounded-lg p-2 text-xs font-bold text-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    >
+                                        <option value="">📡 Mode: Auto-GPS (Real)</option>
+                                        <option disabled>--- Manual Override ---</option>
+                                        {Object.keys(LOCATION_MAP).map(state => (
+                                            <option key={state} value={state}>📍 Force: {state}</option>
+                                        ))}
+                                    </select>
+                                </div>
+
                                 {/* QR Box (Auto) */}
                                 <div className="bg-slate-50 p-6 rounded-2xl flex flex-col items-center justify-center border border-slate-100 mb-6">
                                     {proofStr ? (
@@ -302,7 +353,7 @@ const Wallet = () => {
                                 <div className="mt-4 p-3 rounded-xl bg-slate-100 text-xs text-center border border-slate-200">
                                     <p className="font-bold text-slate-500 mb-1">GPS Status</p>
                                     <div className={`font-mono font-bold mb-1 ${locationStatus === 'found' ? 'text-green-600' : locationStatus === 'error' ? 'text-red-500' : 'text-blue-500 animate-pulse'}`}>
-                                        {locationStatus === 'found' && 'CONNECTED'}
+                                        {locationStatus === 'found' && (manualLocation ? 'FORCED (MANUAL)' : 'CONNECTED')}
                                         {locationStatus === 'error' && 'FAILED'}
                                         {(locationStatus === 'seeking' || locationStatus === 'idle') && 'SEARCHING...'}
                                     </div>
@@ -315,6 +366,7 @@ const Wallet = () => {
                                 </div>
                             </>
                         ) : (
+
                             <>
                                 {/* Manual Input Form */}
                                 <div className="space-y-4 mb-6">
