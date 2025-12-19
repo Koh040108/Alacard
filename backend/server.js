@@ -10,6 +10,12 @@ const fraudEngine = require('./fraudEngine');
 const app = express();
 const PORT = 3000;
 
+app.use(cors({
+    origin: '*', // Allow all origins explicitly
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
 // =============================================================================
 // RATE LIMITING
 // =============================================================================
@@ -33,11 +39,6 @@ const apiLimiter = rateLimit({
 // Apply global API limiter to all routes starting with /
 app.use(apiLimiter);
 
-app.use(cors({
-    origin: '*', // Allow all origins for the simulator demo
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
 app.use(bodyParser.json());
 
 // =============================================================================
@@ -243,6 +244,9 @@ app.post('/verify-token', async (req, res) => {
     const locationObj = req.body.location || { state: 'Unknown' };
     const locationStr = JSON.stringify(locationObj);
 
+    // Check if we have an active challenge for this nonce
+    const challenge = nonceStore.getChallenge(pNonce);
+
     // ACTIVE FLOW (Challenge exists)
     if (challenge) {
         const consumed = nonceStore.consumeNonce(pNonce);
@@ -400,3 +404,5 @@ app.listen(PORT, () => {
     console.log(`- Crypto Core: ECDSA P-256 (Enabled)`);
     console.log(`- AI Fraud Engine: Enabled`);
 });
+
+module.exports = app;

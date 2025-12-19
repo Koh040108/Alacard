@@ -7,8 +7,13 @@ let db;
 async function initDB() {
   if (db) return db;
 
+  const isVercel = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_VERSION;
+  const dbPath = isVercel
+    ? path.join('/tmp', 'alacard.db')
+    : path.join(__dirname, 'alacard.db');
+
   db = await open({
-    filename: path.join(__dirname, 'alacard.db'),
+    filename: dbPath,
     driver: sqlite3.Database
   });
 
@@ -47,12 +52,12 @@ async function initDB() {
   // Migration: Add location/risk column if it doesn't exist
   try {
     await db.exec('ALTER TABLE audit_logs ADD COLUMN location TEXT');
-  } catch(e) {}
-  
+  } catch (e) { }
+
   try {
     await db.exec('ALTER TABLE audit_logs ADD COLUMN risk_data TEXT');
     console.log("Migrated: Added risk_data column");
-  } catch(e) {}
+  } catch (e) { }
 
 
   console.log('Database initialized');
