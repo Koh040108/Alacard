@@ -28,7 +28,8 @@ async function initDB() {
       token_id TEXT PRIMARY KEY,
       token_hash TEXT,
       expiry TEXT,
-      issuer_signature TEXT
+      issuer_signature TEXT,
+      status TEXT DEFAULT 'ACTIVE'
     );
 
     CREATE TABLE IF NOT EXISTS verification_terminals (
@@ -57,6 +58,26 @@ async function initDB() {
   try {
     await db.exec('ALTER TABLE audit_logs ADD COLUMN risk_data TEXT');
     console.log("Migrated: Added risk_data column");
+  } catch (e) { }
+
+  try {
+    await db.exec('ALTER TABLE audit_logs ADD COLUMN wallet_binding TEXT');
+    console.log("Migrated: Added wallet_binding column");
+  } catch (e) { }
+
+  try {
+    await db.exec("ALTER TABLE issued_tokens ADD COLUMN status TEXT DEFAULT 'ACTIVE'");
+    console.log("Migrated: Added status column to issued_tokens");
+  } catch (e) { }
+
+  try {
+    await db.exec("ALTER TABLE citizens ADD COLUMN subsidy_quota REAL DEFAULT 300.00");
+    console.log("Migrated: Added subsidy_quota column to citizens");
+  } catch (e) { }
+
+  try {
+    await db.exec('ALTER TABLE issued_tokens ADD COLUMN citizen_id TEXT');
+    console.log("Migrated: Added citizen_id column to issued_tokens");
   } catch (e) { }
 
 

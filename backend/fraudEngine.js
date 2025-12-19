@@ -14,16 +14,59 @@ const LOCATION_MAP = {
 const MAX_VELOCITY_KMH = 800; // Plane speed
 const FREQUENCY_LIMIT_MINS = 5; // Min minutes between rapid hops
 
+// Helper: Get coords for terminal location
+const getTerminalCoords = (locName) => {
+    return LOCATION_MAP[locName] || null;
+}
+
 /**
  * Main Risk Analysis Function
  * @param {Object} db - Database instance
  * @param {string} tokenHash - Token identifier
- * @param {Object} currentLocation - { state, city }
+ * @param {Object} terminalLocation - { state, city } (From Terminal)
+ * @param {Object} walletLocation - { lat, lng } (From Phone GPS) or null
  * @returns {Object} { score: 0-100, reasons: [], level: 'SAFE'|'WARN'|'CRITICAL' }
  */
-async function analyzeRisk(db, tokenHash, currentLocation) {
+async function analyzeRisk(db, tokenHash, terminalLocation, walletLocation) {
     let riskScore = 0;
     let reasons = [];
+
+    // --- RULE 0: PROXIMITY CHECK (Relay Attack Prevention) ---
+    let terminalCoords = null;
+    // Check if terminal provided raw GPS coordinates (Real Location mode)
+    if (terminalLocation.latitude && terminalLocation.longitude) {
+        terminalCoords = { latitude: terminalLocation.latitude, longitude: terminalLocation.longitude };
+    } else {
+        // Fallback to State Lookup (Simulation/Static mode)
+        terminalCoords = LOCATION_MAP[terminalLocation.state];
+    }
+
+    if (walletLocation && terminalCoords) {
+        // Calculate distance between Phone (Wallet) and Terminal (Kiosk)
+        const distMeters = geolib.getDistance(
+            { latitude: walletLocation.lat, longitude: walletLocation.lng },
+            terminalCoords
+        );
+        const distKm = distMeters / 1000;
+
+        console.log(`[AI Proximity] Wallet vs Terminal: ${distKm.toFixed(2)} km`);
+
+        if (distKm > 100) {
+            riskScore += 90;
+            reasons.push(`Relay Attack Detected: Phone is ${distKm.toFixed(0)}km away from Terminal!`);
+        } else if (distKm > 5) {
+            riskScore += 50;
+            reasons.push(`Proximity Mismatch: Phone is ${distKm.toFixed(1)}km away from Terminal.`);
+        }
+    } else {
+        // Missing Location Data
+        if (!walletLocation) {
+            // Risk is low because user might just have GPS off, but worth noting
+            riskScore += 10;
+            reasons.push("Wallet Location Missing (GPS Off?)");
+        }
+    }
+
 
     // 1. Get History
     const history = await db.all(
@@ -33,7 +76,14 @@ async function analyzeRisk(db, tokenHash, currentLocation) {
 
     // If no history, it's a first-time use (Low Risk but flagged as New)
     if (history.length === 0) {
-        return { score: 10, reasons: ["New Device/First Use"], level: 'SAFE' };
+        // If we already have high risk from proximity, don't overwrite it, just return
+        const finalScore = Math.max(riskScore, 10);
+        const finalReasons = [...reasons, "New Device/First Use"];
+        return {
+            score: finalScore,
+            reasons: finalReasons,
+            level: finalScore > 60 ? 'CRITICAL' : finalScore > 20 ? 'WARN' : 'SAFE'
+        };
     }
 
     const lastLog = history[0];
@@ -42,7 +92,6 @@ async function analyzeRisk(db, tokenHash, currentLocation) {
     const timeDiffHours = (currentTime - lastTime) / (1000 * 60 * 60);
 
     // Parse Locations
-    const currCoords = LOCATION_MAP[currentLocation.state];
     let lastLocationObj = null;
     try {
         lastLocationObj = JSON.parse(lastLog.location);
@@ -50,12 +99,12 @@ async function analyzeRisk(db, tokenHash, currentLocation) {
         lastLocationObj = { state: 'Unknown' };
     }
 
-    // If we can map the coords, do physics checks
-    if (currCoords && lastLocationObj && LOCATION_MAP[lastLocationObj.state]) {
+    // If we can map the coords, do physics checks (Impossible Travel)
+    if (terminalCoords && lastLocationObj && LOCATION_MAP[lastLocationObj.state]) {
         const lastCoords = LOCATION_MAP[lastLocationObj.state];
 
         // DISTANCE Check (in meters, convert to km)
-        const distanceKm = geolib.getDistance(lastCoords, currCoords) / 1000;
+        const distanceKm = geolib.getDistance(lastCoords, terminalCoords) / 1000;
 
         // VELOCITY Check
         if (distanceKm > 50 && timeDiffHours > 0.01) { // Ignore small jitters
@@ -73,7 +122,8 @@ async function analyzeRisk(db, tokenHash, currentLocation) {
             .map(h => {
                 try {
                     const l = JSON.parse(h.location);
-                    return LOCATION_MAP[l.state];
+                    if (!l || !l.state) return null;
+                    return LOCATION_MAP[l.state] || null;
                 } catch (e) { return null; }
             })
             .filter(p => p !== null);
@@ -81,7 +131,7 @@ async function analyzeRisk(db, tokenHash, currentLocation) {
         if (points.length >= 3) {
             const center = geolib.getCenter(points);
             // Distance from "Home/Normal" Center
-            const distFromCenter = geolib.getDistance(center, currCoords) / 1000;
+            const distFromCenter = geolib.getDistance(center, terminalCoords) / 1000;
 
             // If new location is > 300km from usual center, slight risk
             if (distFromCenter > 300 && distanceKm > 100) {

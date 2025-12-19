@@ -29,9 +29,10 @@ const issueLimiter = rateLimit({
 });
 
 // General limit for verification/challenges
+// General limit for verification/challenges
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100, // Limit each IP to 100 requests per windowMs
+    max: 1000, // Increase significantly for polling
     standardHeaders: true,
     legacyHeaders: false,
 });
@@ -207,8 +208,8 @@ app.post('/issue-token', issueLimiter, async (req, res) => {
         // Note: We authenticate the token via signature, but logging issuance is good practice
         const expiryMs = Date.now() + (30 * 24 * 60 * 60 * 1000);
         await req.db.run(
-            'INSERT INTO issued_tokens (token_id, token_hash, expiry, issuer_signature) VALUES (?, ?, ?, ?)',
-            [tokenResult.payload.jti, tokenResult.tokenHash, expiryMs, 'ECDSA_SIG']
+            'INSERT INTO issued_tokens (token_id, token_hash, expiry, issuer_signature, citizen_id) VALUES (?, ?, ?, ?, ?)',
+            [tokenResult.payload.jti, tokenResult.tokenHash, expiryMs, 'ECDSA_SIG', citizen_id]
         );
 
         res.json({
@@ -241,8 +242,9 @@ app.post('/verify-token', async (req, res) => {
     }
 
     // 4. Extract Location
-    const locationObj = req.body.location || { state: 'Unknown' };
-    const locationStr = JSON.stringify(locationObj);
+    const terminalLocation = req.body.location || { state: 'Unknown' };
+    const walletLocation = req.body.wallet_location || null;
+    const locationStr = JSON.stringify(terminalLocation);
 
     // Check if we have an active challenge for this nonce
     const challenge = nonceStore.getChallenge(pNonce);
@@ -260,18 +262,27 @@ app.post('/verify-token', async (req, res) => {
 
         if (!result.valid) return res.status(400).json({ error: result.error });
 
+        // 4.5 CHECK FREEZE STATUS
+        const issuedToken = await req.db.get('SELECT status FROM issued_tokens WHERE token_hash = ?', [result.tokenHash]);
+        const wbind = result.walletBinding; // Extract Wallet Binding
+
+        if (issuedToken && issuedToken.status === 'FROZEN') {
+            await logAudit(req.db, result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_FROZEN', { reason: 'Government Freeze' });
+            return res.json({ status: 'BLOCKED_FROZEN', error: 'Token is Frozen by Issuer' });
+        }
+
         // 5. AI RISK ANALYSIS
-        const riskAnalysis = await fraudEngine.analyzeRisk(req.db, result.tokenHash, locationObj);
+        const riskAnalysis = await fraudEngine.analyzeRisk(req.db, result.tokenHash, terminalLocation, walletLocation);
         console.log('[AI] Risk Analysis:', riskAnalysis);
 
         // BLOCK if High Risk? Or just Warner? 
-        // For this Simulator, let's BLOCK if Critical > 80 (Impossible Travel)
+        // User Request: "Just detect and notify, don't block"
         let finalStatus = 'ELIGIBLE';
-        if (riskAnalysis.score >= 80) finalStatus = 'BLOCKED_FRAUD';
+        if (riskAnalysis.score >= 80) finalStatus = 'WARNING'; // Changed from BLOCKED_FRAUD
         else if (riskAnalysis.score > 20) finalStatus = 'WARNING';
 
         // Log & Respond
-        await logAudit(req.db, result.tokenHash, terminalId, locationStr, finalStatus, riskAnalysis);
+        await logAudit(req.db, result.tokenHash, wbind, terminalId, locationStr, finalStatus, riskAnalysis);
 
         return res.json({
             status: finalStatus,
@@ -299,18 +310,27 @@ app.post('/verify-token', async (req, res) => {
         return res.status(400).json({ error: result.error });
     }
 
+    // CHECK FREEZE STATUS (Passive)
+    const issuedToken = await req.db.get('SELECT status FROM issued_tokens WHERE token_hash = ?', [result.tokenHash]);
+    const wbind = result.walletBinding; // Extract Wallet Binding
+
+    if (issuedToken && issuedToken.status === 'FROZEN') {
+        await logAudit(req.db, result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_FROZEN', { reason: 'Government Freeze' });
+        return res.json({ status: 'BLOCKED_FROZEN', error: 'Token is Frozen by Issuer' });
+    }
+
     // 5. AI RISK ANALYSIS (Passive Flow)
-    const riskAnalysis = await fraudEngine.analyzeRisk(req.db, result.tokenHash, locationObj);
+    const riskAnalysis = await fraudEngine.analyzeRisk(req.db, result.tokenHash, terminalLocation || {}); // Fix undefined locaionObj
     console.log('[AI] Risk Analysis (Passive):', riskAnalysis);
 
     let finalStatus = 'ELIGIBLE';
-    if (riskAnalysis.score >= 80) finalStatus = 'BLOCKED_FRAUD';
+    if (riskAnalysis.score >= 80) finalStatus = 'WARNING'; // Changed from BLOCKED_FRAUD
     else if (riskAnalysis.score > 20) finalStatus = 'WARNING';
 
     // Cache signature to prevent reuse logic
     signatureCache.add(pSig);
 
-    await logAudit(req.db, result.tokenHash, terminalId, locationStr, finalStatus, riskAnalysis);
+    await logAudit(req.db, result.tokenHash, wbind, terminalId, locationStr, finalStatus, riskAnalysis);
     return res.json({
         status: finalStatus,
         risk: riskAnalysis,
@@ -321,7 +341,7 @@ app.post('/verify-token', async (req, res) => {
 });
 
 // Helper for Audit Logging
-async function logAudit(db, tokenHash, terminalId, location, resultStatus, riskAnalysis = {}) {
+async function logAudit(db, tokenHash, walletBinding, terminalId, location, resultStatus, riskAnalysis = {}) {
     const timestamp = new Date().toISOString();
     const lastLog = await db.get('SELECT current_hash FROM audit_logs ORDER BY audit_id DESC LIMIT 1');
     const prev_hash = lastLog ? lastLog.current_hash : 'GENESIS_HASH';
@@ -329,12 +349,12 @@ async function logAudit(db, tokenHash, terminalId, location, resultStatus, riskA
     const riskStr = JSON.stringify(riskAnalysis);
 
     // Include location and risk in the immutable record chain
-    const record_data = prev_hash + tokenHash + terminalId + location + riskStr + timestamp + resultStatus;
+    const record_data = prev_hash + tokenHash + walletBinding + terminalId + location + riskStr + timestamp + resultStatus;
     const current_hash = crypto.sha256Hex(record_data);
 
     await db.run(
-        'INSERT INTO audit_logs (token_hash, terminal_id, location, risk_data, timestamp, result, prev_hash, current_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [tokenHash, terminalId, location, riskStr, timestamp, resultStatus, prev_hash, current_hash]
+        'INSERT INTO audit_logs (token_hash, wallet_binding, terminal_id, location, risk_data, timestamp, result, prev_hash, current_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [tokenHash, walletBinding, terminalId, location, riskStr, timestamp, resultStatus, prev_hash, current_hash]
     );
 }
 
@@ -379,25 +399,124 @@ app.get('/citizens', async (req, res) => {
 
 // POST /update-citizen
 app.post('/update-citizen', async (req, res) => {
-    const { citizen_id, income, eligibility_status } = req.body;
+    const { citizen_id, income, eligibility_status, subsidy_quota } = req.body;
     if (!citizen_id) return res.status(400).json({ error: 'Missing citizen_id' });
 
     try {
         const exists = await req.db.get('SELECT citizen_id FROM citizens WHERE citizen_id = ?', [citizen_id]);
+        const quota = subsidy_quota !== undefined ? subsidy_quota : 300.00;
 
         if (exists) {
+            // Check if subsidy_quota was provided, else keep existing? 
+            // For simplicity, we update it if provided, or default if not exist? 
+            // Actually, best to read current if not provided. But for now let's just always update or default.
             await req.db.run(
-                'UPDATE citizens SET income = ?, eligibility_status = ? WHERE citizen_id = ?',
-                [income, eligibility_status, citizen_id]
+                'UPDATE citizens SET income = ?, eligibility_status = ?, subsidy_quota = ? WHERE citizen_id = ?',
+                [income, eligibility_status, quota, citizen_id]
             );
         } else {
             await req.db.run(
-                'INSERT INTO citizens (citizen_id, income, eligibility_status) VALUES (?, ?, ?)',
-                [citizen_id, income, eligibility_status]
+                'INSERT INTO citizens (citizen_id, income, eligibility_status, subsidy_quota) VALUES (?, ?, ?, ?)',
+                [citizen_id, income, eligibility_status, quota]
             );
         }
 
         res.json({ success: true, citizen_id });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /admin/reset-quotas
+app.post('/admin/reset-quotas', async (req, res) => {
+    const { amount } = req.body;
+    if (!amount && amount !== 0) return res.status(400).json({ error: 'Missing amount' });
+    try {
+        await req.db.run('UPDATE citizens SET subsidy_quota = ?', [amount]);
+        res.json({ success: true, message: `All quotas reset to ${amount}` });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /claim-subsidy (Simulated Pump Transaction)
+app.post('/claim-subsidy', async (req, res) => {
+    const { token, amount } = req.body;
+    let { citizen_id } = req.body; // Can be undefined now
+    if (!token || !amount) return res.status(400).json({ error: 'Missing token or amount' });
+
+    try {
+        if (!citizen_id) {
+            // Lookup via token hash
+            const tokenHash = crypto.hashToken(token);
+            const issued = await req.db.get('SELECT citizen_id FROM issued_tokens WHERE token_hash = ?', [tokenHash]);
+            if (issued && issued.citizen_id) {
+                citizen_id = issued.citizen_id;
+            } else {
+                return res.status(404).json({ error: 'Token not linked to citizen (Legacy or Invalid)' });
+            }
+        }
+
+        const citizen = await req.db.get('SELECT * FROM citizens WHERE citizen_id = ?', [citizen_id]);
+        if (!citizen) return res.status(404).json({ error: 'Citizen not found' });
+
+        if ((citizen.subsidy_quota || 0) < amount) {
+            return res.status(400).json({ error: 'Insufficient Quota' });
+        }
+
+        const newBalance = (citizen.subsidy_quota || 0) - amount;
+        await req.db.run('UPDATE citizens SET subsidy_quota = ? WHERE citizen_id = ?', [newBalance, citizen_id]);
+
+        // Log it
+        const wbind = crypto.parseToken(token).payload.wbind;
+        await logAudit(req.db, crypto.hashToken(token), wbind, 'PUMP_SIMULATOR', JSON.stringify({ amount, remaining: newBalance }), 'CLAIM_SUCCESS');
+
+        res.json({ success: true, remaining: newBalance });
+
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// POST /freeze-token
+app.post('/freeze-token', async (req, res) => {
+    console.log("[DEBUG] /freeze-token body:", req.body);
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: 'Missing token' });
+
+    try {
+        const tokenHash = crypto.hashToken(token);
+        await req.db.run("UPDATE issued_tokens SET status = 'FROZEN' WHERE token_hash = ?", [tokenHash]);
+        res.json({ success: true, message: 'Token Frozen' });
+    } catch (error) {
+        console.error("Freeze Error:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /unfreeze-token
+app.post('/unfreeze-token', async (req, res) => {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: 'Missing token' });
+
+    try {
+        const tokenHash = crypto.hashToken(token);
+        await req.db.run("UPDATE issued_tokens SET status = 'ACTIVE' WHERE token_hash = ?", [tokenHash]);
+        res.json({ success: true, message: 'Token Activated' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /token-status
+app.post('/token-status', async (req, res) => {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: 'Missing token' });
+
+    try {
+        const tokenHash = crypto.hashToken(token);
+        const row = await req.db.get("SELECT status FROM issued_tokens WHERE token_hash = ?", [tokenHash]);
+        res.json({ status: row ? row.status : 'UNKNOWN' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -410,6 +529,65 @@ app.get('/issued-tokens', async (req, res) => {
         res.json(tokens);
     } catch (error) {
         res.status(500).json({ error: error.message });
+    }
+});
+
+// POST /my-activity (Citizen Personal Logs)
+app.post('/my-activity', async (req, res) => {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: 'Missing token' });
+
+    try {
+        // 1. Get Token Hash
+        const tokenHash = crypto.hashToken(token);
+
+        // 2. Find Citizen ID for this token
+        const issueRecord = await req.db.get('SELECT citizen_id FROM issued_tokens WHERE token_hash = ?', [tokenHash]);
+
+        if (!issueRecord || !issueRecord.citizen_id) {
+            // Fallback: Use wallet binding if legacy token or no citizen link found
+            const parsed = crypto.parseToken(token);
+            const wbind = parsed.payload.wbind;
+            const logs = await req.db.all(
+                'SELECT * FROM audit_logs WHERE wallet_binding = ? ORDER BY timestamp DESC',
+                [wbind]
+            );
+            return res.json(logs);
+        }
+
+        const citizenId = issueRecord.citizen_id;
+
+        // 3. Find ALL tokens for this citizen to aggregated history across devices/sessions
+        const allTokens = await req.db.all('SELECT token_hash FROM issued_tokens WHERE citizen_id = ?', [citizenId]);
+        const allHashes = allTokens.map(t => t.token_hash);
+
+        if (allHashes.length === 0) return res.json([]);
+
+        // 4. Fetch logs for ALL these tokens
+        const placeholders = allHashes.map(() => '?').join(',');
+        const logs = await req.db.all(
+            `SELECT * FROM audit_logs WHERE token_hash IN (${placeholders}) ORDER BY timestamp DESC`,
+            allHashes
+        );
+
+        res.json(logs);
+    } catch (err) {
+        console.error("Activity Fetch Error:", err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /my-balance
+app.post('/my-balance', async (req, res) => {
+    const { citizen_id } = req.body;
+    if (!citizen_id) return res.status(400).json({ error: 'Missing citizen_id' });
+
+    try {
+        const citizen = await req.db.get('SELECT subsidy_quota FROM citizens WHERE citizen_id = ?', [citizen_id]);
+        if (!citizen) return res.status(404).json({ error: 'Citizen not found' });
+        res.json({ balance: citizen.subsidy_quota !== undefined ? citizen.subsidy_quota : 300.00 });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
 
