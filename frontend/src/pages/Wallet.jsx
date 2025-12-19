@@ -28,6 +28,8 @@ const Wallet = () => {
     const [scanMode, setScanMode] = useState('auto'); // 'auto' | 'manual'
     const [inputNonce, setInputNonce] = useState('');
     const [claimAmount, setClaimAmount] = useState(null);
+    const [locationStatus, setLocationStatus] = useState('idle'); // idle, seeking, found, error
+    const [locationError, setLocationError] = useState(null);
 
     useEffect(() => {
         const savedKeys = JSON.parse(localStorage.getItem('alacard_keys'));
@@ -38,6 +40,7 @@ const Wallet = () => {
         if (savedToken) setToken(savedToken);
         if (savedCitizenId) setCitizenId(savedCitizenId);
     }, []);
+
 
     // -------------------------------------------------------------------------
     // IDENTITY MANAGEMENT (Onboarding)
@@ -131,9 +134,12 @@ const Wallet = () => {
                         walletPrivateKey: pk
                     });
 
+                    setLocationStatus('seeking');
                     // Get Location for Proximity Check
                     navigator.geolocation.getCurrentPosition(
                         (pos) => {
+                            setLocationStatus('found');
+                            setLocationError(null);
                             const payload = {
                                 proof: p,
                                 loc: { lat: pos.coords.latitude, lng: pos.coords.longitude },
@@ -143,6 +149,8 @@ const Wallet = () => {
                         },
                         (err) => {
                             console.warn("Location denied/unavailable");
+                            setLocationStatus('error');
+                            setLocationError(err.message + (window.isSecureContext ? '' : ' (Not HTTPS)'));
                             setProofStr(JSON.stringify({ proof: p, loc: null, claim_amount: claimAmount }));
                         },
                         { timeout: 10000 } // Increased to 10s for better GPS fix
@@ -287,6 +295,22 @@ const Wallet = () => {
                                         <span className="font-bold text-sm">Live Token</span>
                                     </div>
                                     <span className="font-mono font-bold">{timeLeft}s</span>
+                                </div>
+
+                                {/* Debug Location Status */}
+                                <div className="mt-4 p-3 rounded-xl bg-slate-100 text-xs text-center border border-slate-200">
+                                    <p className="font-bold text-slate-500 mb-1">GPS Status</p>
+                                    <div className={`font-mono font-bold mb-1 ${locationStatus === 'found' ? 'text-green-600' : locationStatus === 'error' ? 'text-red-500' : 'text-blue-500 animate-pulse'}`}>
+                                        {locationStatus === 'found' && 'CONNECTED'}
+                                        {locationStatus === 'error' && 'FAILED'}
+                                        {(locationStatus === 'seeking' || locationStatus === 'idle') && 'SEARCHING...'}
+                                    </div>
+                                    {locationStatus === 'error' && (
+                                        <p className="text-red-500 text-[10px]">{locationError}</p>
+                                    )}
+                                    <p className="text-[9px] text-slate-400 mt-2">
+                                        (Requires HTTPS/Localhost + Permission)
+                                    </p>
                                 </div>
                             </>
                         ) : (
