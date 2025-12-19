@@ -229,7 +229,18 @@ app.post('/verify-token', async (req, res) => {
     const terminalId = req.body.terminalId || 'UNKNOWN_TERMINAL';
 
     console.log('[DEBUG] /verify-token body:', JSON.stringify(req.body));
-    console.log('[DEBUG] Received Wallet Location:', req.body.wallet_location);
+    // Enhanced Extraction with Fallback
+    let walletLocation = req.body.wallet_location || null;
+
+    // Fallback: Check for flattened coordinates (if object was lost/stripped)
+    if (!walletLocation && req.body.wallet_lat && req.body.wallet_lng) {
+        console.log('[DEBUG] Reconstructing Wallet Location from flattened params');
+        walletLocation = { lat: parseFloat(req.body.wallet_lat), lng: parseFloat(req.body.wallet_lng) };
+    }
+
+    // Debug Headers and Body Keys
+    console.log('[DEBUG] Req Keys:', Object.keys(req.body));
+    console.log('[DEBUG] Received Wallet Location:', walletLocation);
 
     if (!proof) {
         return res.status(400).json({ error: 'Missing proof object', received: req.body });
@@ -244,7 +255,6 @@ app.post('/verify-token', async (req, res) => {
 
     // 4. Extract Location
     const terminalLocation = req.body.location || { state: 'Unknown' };
-    const walletLocation = req.body.wallet_location || null;
     const locationStr = JSON.stringify(terminalLocation);
 
     // Check if we have an active challenge for this nonce

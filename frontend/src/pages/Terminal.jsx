@@ -197,7 +197,10 @@ const Terminal = () => {
                 proof: proof,
                 terminal_id: 'TERM-001',
                 location: location, // Terminal Location
-                wallet_location: walletLoc // Wallet Location (from QR)
+                wallet_location: walletLoc, // Wallet Location (from QR)
+                // Fallback Primitives
+                wallet_lat: walletLoc?.lat,
+                wallet_lng: walletLoc?.lng
             });
 
             setRiskData(res.data.risk);
