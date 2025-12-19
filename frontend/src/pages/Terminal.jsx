@@ -140,15 +140,28 @@ const Terminal = () => {
 
             try {
                 const json = JSON.parse(proofInput);
-                // Check if it's the new Wrapper format { proof: ..., loc: ... }
+
+                // 1. Extract Proof
                 if (json.proof) {
                     proof = json.proof;
-                    walletLoc = json.loc;
-                    requestedAmount = json.claim_amount;
                 } else {
-                    // Legacy/Direct proof format
-                    proof = json;
+                    proof = json; // Legacy direct proof
                 }
+
+                // 2. Extract Location (Support multiple keys)
+                if (json.loc) walletLoc = json.loc;
+                else if (json.wallet_location) walletLoc = json.wallet_location;
+                else if (json.location) walletLoc = json.location;
+
+                // 3. Normalize Location to { lat, lng }
+                if (walletLoc) {
+                    if (walletLoc.latitude && !walletLoc.lat) {
+                        walletLoc = { lat: walletLoc.latitude, lng: walletLoc.longitude };
+                    }
+                }
+
+                // 4. Extract Amount
+                if (json.claim_amount) requestedAmount = json.claim_amount;
             } catch (e) {
                 throw new Error("Invalid Proof Format (JSON expected)");
             }
@@ -173,7 +186,7 @@ const Terminal = () => {
 
             // Send to backend for formal verification and audit logging
             // The backend performs the same PKI checks we would do locally
-            console.log("Verifying with Wallet Loc:", walletLoc);
+            console.log("sending to backend:", { walletLoc, location });
             const res = await api.post('/verify-token', {
                 proof: proof,
                 terminal_id: 'TERM-001',
