@@ -19,6 +19,9 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+// Trust the first proxy (e.g., Vercel, Nginx, etc.)
+app.set('trust proxy', 1);
+
 // =============================================================================
 // RATE LIMITING
 // =============================================================================
@@ -29,8 +32,8 @@ const issueLimiter = rateLimit({
     windowMs: 60 * 60 * 1000, // 1 hour
     max: 10, // Limit each IP to 10 requests per windowMs
     message: { error: 'Too many tokens issued from this IP, please try again after an hour' },
-    validate: { xForwardedForHeader: false }, // Disable validation for proxy
-    keyGenerator: (req) => req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown'
+    standardHeaders: true,
+    legacyHeaders: false,
 });
 
 // General limit for verification/challenges
@@ -39,8 +42,6 @@ const apiLimiter = rateLimit({
     max: parseInt(process.env.RATE_LIMIT_MAX) || 1000,
     standardHeaders: true,
     legacyHeaders: false,
-    validate: { xForwardedForHeader: false }, // Disable validation for proxy
-    keyGenerator: (req) => req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown'
 });
 
 // Apply global API limiter to all routes starting with /
@@ -141,7 +142,9 @@ initDB().then(async () => {
     loadOrGenerateKeys();
 
     // Auto-seed if citizens table is empty (for Stateless Demos)
+    console.log('[DEBUG] Checking database state (counting citizens)...');
     const count = await prisma.citizen.count();
+    console.log('[DEBUG] Database state: found', count, 'citizens');
     if (count === 0) {
         console.log('Database empty. Auto-seeding default citizens...');
         await prisma.citizen.createMany({
@@ -305,25 +308,25 @@ app.post('/verify-token', async (req, res) => {
 
         if (!result.valid) return res.status(400).json({ error: result.error });
 
-        // 4.5 CHECK FREEZE STATUS
+        // 4.5 AI RISK ANALYSIS
+        const riskAnalysis = await fraudEngine.analyzeRisk(prisma, result.tokenHash, terminalLocation, walletLocation);
+        console.log('[AI] Risk Analysis:', riskAnalysis);
+
+        // 5. CHECK FREEZE STATUS
         const issuedToken = await prisma.issuedToken.findFirst({
             where: { token_hash: result.tokenHash }
         });
         const wbind = result.walletBinding; // Extract Wallet Binding
 
         if (issuedToken && issuedToken.status === 'FROZEN') {
-            await logAudit(result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_FROZEN', { reason: 'Government Freeze' });
-            return res.json({ status: 'BLOCKED_FROZEN', error: 'Token is Frozen by Issuer' });
+            await logAudit(result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_FROZEN', riskAnalysis);
+            return res.json({ status: 'BLOCKED_FROZEN', error: 'Token is Frozen by Issuer', risk: riskAnalysis });
         }
-
-        // 5. AI RISK ANALYSIS
-        const riskAnalysis = await fraudEngine.analyzeRisk(prisma, result.tokenHash, terminalLocation, walletLocation);
-        console.log('[AI] Risk Analysis:', riskAnalysis);
 
         // BLOCK if High Risk? Or just Warner? 
         // User Request: "Just detect and notify, don't block"
         let finalStatus = 'ELIGIBLE';
-        if (riskAnalysis.score >= 80) finalStatus = 'WARNING'; // Changed from BLOCKED_FRAUD
+        if (riskAnalysis.score >= 80) finalStatus = 'ELIGIBLE'; // Changed from BLOCKED_FRAUD
         else if (riskAnalysis.score > 20) finalStatus = 'WARNING';
 
         // Log & Respond
@@ -355,6 +358,10 @@ app.post('/verify-token', async (req, res) => {
         return res.status(400).json({ error: result.error });
     }
 
+    // 5. AI RISK ANALYSIS (Passive Flow)
+    const riskAnalysis = await fraudEngine.analyzeRisk(prisma, result.tokenHash, terminalLocation || {}, walletLocation);
+    console.log('[AI] Risk Analysis (Passive):', riskAnalysis);
+
     // CHECK FREEZE STATUS (Passive)
     const issuedToken = await prisma.issuedToken.findFirst({
         where: { token_hash: result.tokenHash }
@@ -362,16 +369,12 @@ app.post('/verify-token', async (req, res) => {
     const wbind = result.walletBinding; // Extract Wallet Binding
 
     if (issuedToken && issuedToken.status === 'FROZEN') {
-        await logAudit(result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_FROZEN', { reason: 'Government Freeze' });
-        return res.json({ status: 'BLOCKED_FROZEN', error: 'Token is Frozen by Issuer' });
+        await logAudit(result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_FROZEN', riskAnalysis);
+        return res.json({ status: 'BLOCKED_FROZEN', error: 'Token is Frozen by Issuer', risk: riskAnalysis });
     }
 
-    // 5. AI RISK ANALYSIS (Passive Flow)
-    const riskAnalysis = await fraudEngine.analyzeRisk(prisma, result.tokenHash, terminalLocation || {}, walletLocation);
-    console.log('[AI] Risk Analysis (Passive):', riskAnalysis);
-
     let finalStatus = 'ELIGIBLE';
-    if (riskAnalysis.score >= 80) finalStatus = 'WARNING'; // Changed from BLOCKED_FRAUD
+    if (riskAnalysis.score >= 80) finalStatus = 'ELIGIBLE'; // Changed from BLOCKED_FRAUD
     else if (riskAnalysis.score > 20) finalStatus = 'WARNING';
 
     // Cache signature to prevent reuse logic
@@ -748,6 +751,7 @@ app.post('/claim-subsidy', async (req, res) => {
 });
 
 // POST /freeze-token
+// POST /freeze-token
 app.post('/freeze-token', async (req, res) => {
     console.log("[DEBUG] /freeze-token body:", req.body);
     const { token } = req.body;
@@ -759,6 +763,14 @@ app.post('/freeze-token', async (req, res) => {
             where: { token_hash: tokenHash },
             data: { status: 'FROZEN' }
         });
+
+        // Log the freeze action
+        const parsed = crypto.parseToken(token);
+        const wbind = parsed.payload.wbind;
+        // We'll use "BLOCKED_FROZEN" or a new status "ACTION_FREEZE" to distinguish the *action* from the *check*
+        // Let's use "TOKEN_FROZEN" to be clear.
+        await logAudit(tokenHash, wbind, 'USER_DEVICE', 'My Profile', 'TOKEN_FROZEN', { initiated_by: 'user' });
+
         res.json({ success: true, message: 'Token Frozen' });
     } catch (error) {
         console.error("Freeze Error:", error);
@@ -766,6 +778,7 @@ app.post('/freeze-token', async (req, res) => {
     }
 });
 
+// POST /unfreeze-token
 // POST /unfreeze-token
 app.post('/unfreeze-token', async (req, res) => {
     const { token } = req.body;
@@ -777,7 +790,59 @@ app.post('/unfreeze-token', async (req, res) => {
             where: { token_hash: tokenHash },
             data: { status: 'ACTIVE' }
         });
+
+        // Log the unfreeze action
+        const parsed = crypto.parseToken(token);
+        const wbind = parsed.payload.wbind;
+        await logAudit(tokenHash, wbind, 'USER_DEVICE', 'My Profile', 'TOKEN_UNFROZEN', { initiated_by: 'user' });
+
         res.json({ success: true, message: 'Token Activated' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ADMIN: Freeze Citizen via ID (Issuer Portal)
+app.post('/admin/freeze-citizen', async (req, res) => {
+    const { citizen_id } = req.body;
+    if (!citizen_id) return res.status(400).json({ error: 'Missing citizen_id' });
+
+    try {
+        await prisma.issuedToken.updateMany({
+            where: { citizen_id: citizen_id },
+            data: { status: 'FROZEN' }
+        });
+
+        // Log admin action - we don't have wbind or hash easily available for all, so we log generic or active one
+        // ideally we fetch active one
+        const active = await prisma.issuedToken.findFirst({ where: { citizen_id } });
+        if (active) {
+            await logAudit(active.token_hash, 'ADMIN', 'ISSUER_PORTAL', 'Citizen DB', 'TOKEN_FROZEN', { initiated_by: 'admin' });
+        }
+
+        res.json({ success: true, message: 'Citizen Tokens Frozen' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ADMIN: Unfreeze Citizen via ID (Issuer Portal)
+app.post('/admin/unfreeze-citizen', async (req, res) => {
+    const { citizen_id } = req.body;
+    if (!citizen_id) return res.status(400).json({ error: 'Missing citizen_id' });
+
+    try {
+        await prisma.issuedToken.updateMany({
+            where: { citizen_id: citizen_id },
+            data: { status: 'ACTIVE' }
+        });
+
+        const active = await prisma.issuedToken.findFirst({ where: { citizen_id } });
+        if (active) {
+            await logAudit(active.token_hash, 'ADMIN', 'ISSUER_PORTAL', 'Citizen DB', 'TOKEN_UNFROZEN', { initiated_by: 'admin' });
+        }
+
+        res.json({ success: true, message: 'Citizen Tokens Unfrozen' });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -874,6 +939,34 @@ app.post('/my-balance', async (req, res) => {
         res.json({ balance: citizen.subsidy_quota !== undefined ? citizen.subsidy_quota : 300.00 });
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+// GET /citizen-logs/:id (Government View)
+app.get('/citizen-logs/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        // 1. Find all tokens for this citizen
+        const tokens = await prisma.issuedToken.findMany({
+            where: { citizen_id: id },
+            select: { token_hash: true }
+        });
+
+        const hashes = tokens.map(t => t.token_hash);
+
+        if (hashes.length === 0) return res.json([]);
+
+        // 2. Fetch logs
+        const logs = await prisma.auditLog.findMany({
+            where: { token_hash: { in: hashes } },
+            orderBy: { timestamp: 'desc' },
+            take: 100
+        });
+
+        res.json(logs);
+    } catch (error) {
+        console.error("Citizen Logs Error:", error);
+        res.status(500).json({ error: error.message });
     }
 });
 

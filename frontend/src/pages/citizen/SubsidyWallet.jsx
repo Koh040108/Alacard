@@ -1,11 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, Lock, Unlock, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Lock, Unlock, ChevronRight, Fingerprint } from 'lucide-react';
 import api from '../../utils/api';
 
 const SubsidyWallet = ({ onNavigate, onScan, token, citizenId }) => {
     const [tokenStatus, setTokenStatus] = useState('ACTIVE');
     const [myKadStatus, setMyKadStatus] = useState('ACTIVE'); // Mock state for Demo
     const [petrolBalance, setPetrolBalance] = useState(0);
+
+    // Biometric State
+    const [showBiometric, setShowBiometric] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const [pendingAction, setPendingAction] = useState(null); // { type: 'freeze'|'unfreeze', target: 'budi'|'mykad' }
 
     useEffect(() => {
         const fetchStatus = () => {
@@ -29,21 +34,42 @@ const SubsidyWallet = ({ onNavigate, onScan, token, citizenId }) => {
         return () => clearInterval(interval);
     }, [token, citizenId]);
 
-    const toggleFreeze = async (e) => {
+    const toggleFreeze = (e) => {
         e.stopPropagation(); // Prevent card click (scan)
-        const action = tokenStatus === 'FROZEN' ? '/unfreeze-token' : '/freeze-token';
-        try {
-            await api.post(action, { token });
-            setTokenStatus(tokenStatus === 'FROZEN' ? 'ACTIVE' : 'FROZEN');
-        } catch (err) {
-            alert("Action failed: " + err.message);
-        }
+        const type = tokenStatus === 'FROZEN' ? 'unfreeze' : 'freeze';
+        setPendingAction({ type, target: 'budi' });
+        setShowBiometric(true);
     };
 
     const toggleMyKad = (e) => {
         e.stopPropagation();
-        // Mock API call simulation
-        setMyKadStatus(prev => prev === 'ACTIVE' ? 'FROZEN' : 'ACTIVE');
+        const type = myKadStatus === 'FROZEN' ? 'unfreeze' : 'freeze';
+        setPendingAction({ type, target: 'mykad' });
+        setShowBiometric(true);
+    };
+
+    const handleBiometricSuccess = async () => {
+        const { type, target } = pendingAction;
+        setShowBiometric(false);
+        setLoading(true);
+
+        try {
+            if (target === 'budi') {
+                const action = type === 'freeze' ? '/freeze-token' : '/unfreeze-token';
+                await api.post(action, { token });
+                setTokenStatus(type === 'freeze' ? 'FROZEN' : 'ACTIVE');
+            } else if (target === 'mykad') {
+                // Mock API call simulation
+                await new Promise(r => setTimeout(r, 500));
+                setMyKadStatus(type === 'freeze' ? 'FROZEN' : 'ACTIVE');
+            }
+            alert(`Success: Token ${type === 'freeze' ? 'Frozen' : 'Activated'}`);
+        } catch (err) {
+            alert("Action failed: " + err.message);
+        } finally {
+            setLoading(false);
+            setPendingAction(null);
+        }
     };
 
     const simulatePump = async (e) => {
@@ -130,6 +156,23 @@ const SubsidyWallet = ({ onNavigate, onScan, token, citizenId }) => {
                     onClick={() => alert("Not eligible for this timeline")}
                 />
             </div>
+
+            {/* Biometric Modal */}
+            {showBiometric && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className="bg-white w-full max-w-xs p-8 rounded-3xl shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95" onClick={handleBiometricSuccess}>
+                        <h3 className="text-lg font-bold text-slate-900 mb-2">Biometric Verification</h3>
+                        <p className="text-slate-500 text-xs mb-8">Scan fingerprint to confirm action</p>
+
+                        <div className="w-20 h-20 bg-red-50 rounded-full flex items-center justify-center mb-8 ring-4 ring-red-500/10 animate-pulse cursor-pointer">
+                            <Fingerprint size={48} className="text-red-500" />
+                        </div>
+
+                        <p className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Touch Sensor</p>
+                        <p className="text-[10px] text-slate-300 mt-2">(Click icon to simulate scan)</p>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

@@ -26,8 +26,9 @@ const History = ({ onNavigate, token }) => {
 
     const filteredLogs = logs.filter(log => {
         if (filter === 'All') return true;
-        if (filter === 'Verified') return log.result === 'ELIGIBLE' || log.result === 'WARNING'; // Treat warnings as verified but flagged
-        if (filter === 'Cancelled') return log.result === 'BLOCKED_FRAUD';
+        if (filter === 'Verified') return ['ELIGIBLE', 'WARNING', 'USER_APPROVED'].includes(log.result);
+        if (filter === 'Cancelled') return ['BLOCKED_FRAUD', 'BLOCKED_FROZEN', 'USER_REJECTED', 'EXPIRED'].includes(log.result);
+        if (filter === 'Security') return ['TOKEN_FROZEN', 'TOKEN_UNFROZEN'].includes(log.result);
         return true;
     });
 
@@ -54,7 +55,7 @@ const History = ({ onNavigate, token }) => {
 
                 {/* Filter Tabs */}
                 <div className="flex gap-2 mt-4 overflow-x-auto no-scrollbar pb-1">
-                    {['All', 'Verified', 'Cancelled'].map(tab => (
+                    {['All', 'Verified', 'Cancelled', 'Security'].map(tab => (
                         <button
                             key={tab}
                             onClick={() => setFilter(tab)}
@@ -63,7 +64,7 @@ const History = ({ onNavigate, token }) => {
                                 : 'bg-white text-slate-500 border-slate-200 hover:border-slate-300'
                                 }`}
                         >
-                            {tab}
+                            {tab === 'Security' ? 'Freeze/Unfreeze' : tab}
                         </button>
                     ))}
                 </div>
@@ -84,20 +85,34 @@ const History = ({ onNavigate, token }) => {
                         try {
                             const l = JSON.parse(log.location);
                             locName = l.state ? `${l.state}, Malaysia` : "Unknown Location";
-                        } catch (e) { }
+                        } catch (e) {
+                            if (log.location === 'My Profile') locName = 'My Profile';
+                        }
 
                         // Parse Time
                         const dateObj = new Date(log.timestamp);
                         const dateStr = dateObj.toLocaleDateString();
                         const timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+                        // Formatting for Security Action
+                        let title = locName;
+                        let details = `Terminal: ${log.terminal_id}`;
+
+                        if (log.result === 'TOKEN_FROZEN') {
+                            title = 'Security Action: Frozen';
+                            details = 'You froze your subsidy token';
+                        } else if (log.result === 'TOKEN_UNFROZEN') {
+                            title = 'Security Action: Unfrozen';
+                            details = 'You reactivated your token';
+                        }
+
                         return (
                             <TransactionCard
                                 key={log.audit_id}
-                                title={locName} // Using Location as Title for now
-                                total="-" // Amount not tracked in these logs yet
+                                title={title}
+                                total="-"
                                 subsidy="Verified"
-                                details={`Terminal: ${log.terminal_id}`}
+                                details={details}
                                 date={`${dateStr}, ${timeStr}`}
                                 status={log.result}
                                 riskData={log.risk_data}
@@ -111,9 +126,10 @@ const History = ({ onNavigate, token }) => {
 };
 
 const TransactionCard = ({ title, total, subsidy, details, date, status, riskData }) => {
-    const isCompleted = status === 'ELIGIBLE';
+    const isCompleted = ['ELIGIBLE', 'USER_APPROVED'].includes(status);
     const isWarning = status === 'WARNING';
-    const isBlocked = status === 'BLOCKED_FRAUD';
+    const isBlocked = ['BLOCKED_FRAUD', 'BLOCKED_FROZEN', 'USER_REJECTED', 'EXPIRED'].includes(status);
+    const isSecurity = ['TOKEN_FROZEN', 'TOKEN_UNFROZEN'].includes(status);
 
     let statusColor = 'bg-slate-100 text-slate-700';
     let StatusIcon = CheckCircle;
@@ -127,6 +143,9 @@ const TransactionCard = ({ title, total, subsidy, details, date, status, riskDat
     } else if (isBlocked) {
         statusColor = 'bg-red-100 text-red-700';
         StatusIcon = XCircle;
+    } else if (isSecurity) {
+        statusColor = 'bg-blue-100 text-blue-700';
+        StatusIcon = Shield;
     }
 
     // Parse Risk Data if available
