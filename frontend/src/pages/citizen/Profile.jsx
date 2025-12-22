@@ -1,7 +1,174 @@
-import React from 'react';
-import { User, Settings, Shield, Bell, LogOut, ChevronRight, HelpCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { User, Settings, Shield, Bell, LogOut, ChevronRight, HelpCircle, Lock, Unlock, Fingerprint, ChevronLeft, Fuel, CreditCard, Globe, Moon } from 'lucide-react';
+import api from '../../utils/api';
 
-const Profile = ({ onNavigate }) => {
+const Profile = ({ onNavigate, token, citizenId }) => {
+    const [view, setView] = useState('main'); // main, security
+    const [tokenStatus, setTokenStatus] = useState('ACTIVE');
+    const [cashAidStatus, setCashAidStatus] = useState('ACTIVE'); // Simulated second token
+    const [loading, setLoading] = useState(false);
+    const [showBiometric, setShowBiometric] = useState(false);
+    const [pendingAction, setPendingAction] = useState(null); // { type: 'freeze'|'unfreeze', target: 'budi'|'cash'|'all' }
+
+    // Fetch initial status
+    useEffect(() => {
+        if (view === 'security' && token) {
+            checkStatus();
+        }
+    }, [view, token]);
+
+    const checkStatus = async () => {
+        if (!token) return;
+        try {
+            const res = await api.post('/token-status', { token });
+            setTokenStatus(res.data.status);
+            // In a real app, we'd fetch the second token's status here too.
+        } catch (err) {
+            console.error("Status check failed", err);
+        }
+    };
+
+    const handleActionRequest = (type, target) => {
+        setPendingAction({ type, target });
+        setShowBiometric(true);
+    };
+
+    const handleBiometricSuccess = async () => {
+        const { type, target } = pendingAction;
+        setShowBiometric(false);
+        setLoading(true);
+
+        try {
+            // Logic for Budi Madani (Real Token)
+            if (target === 'budi' || target === 'all') {
+                const endpoint = type === 'freeze' ? '/freeze-token' : '/unfreeze-token';
+                await api.post(endpoint, { token });
+                await checkStatus();
+            }
+
+            // Logic for Cash Aid (Simulated)
+            if (target === 'cash' || target === 'all') {
+                // Simulate network delay
+                await new Promise(r => setTimeout(r, 500));
+                setCashAidStatus(type === 'freeze' ? 'FROZEN' : 'ACTIVE');
+            }
+
+            alert(`Success: ${target === 'all' ? 'All Tokens' : 'Token'} ${type === 'freeze' ? 'Frozen' : 'Activated'}`);
+        } catch (err) {
+            alert("Action Failed: " + err.message);
+        } finally {
+            setLoading(false);
+            setPendingAction(null);
+        }
+    };
+
+    // Sub-view: Security
+    if (view === 'security') {
+        const isBudiFrozen = tokenStatus === 'FROZEN';
+        const isCashFrozen = cashAidStatus === 'FROZEN';
+        const allFrozen = isBudiFrozen && isCashFrozen;
+
+        return (
+            <div className="bg-slate-50 min-h-screen pb-24 font-sans flex flex-col animate-in slide-in-from-right duration-300">
+                <div className="bg-white px-6 pt-12 pb-6 shadow-sm sticky top-0 z-10 flex items-center gap-4">
+                    <button onClick={() => setView('main')} className="p-2 -ml-2 rounded-full hover:bg-slate-100">
+                        <ChevronLeft className="text-slate-600" />
+                    </button>
+                    <div>
+                        <h1 className="text-xl font-bold text-slate-900">Security & Privacy</h1>
+                        <p className="text-slate-500 text-xs">Manage detailed security settings</p>
+                    </div>
+                </div>
+
+                <div className="p-6 space-y-6">
+                    {/* Token Management Card */}
+                    <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                        <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+                            <Shield size={18} className="text-blue-600" />
+                            Manage Subsidy Tokens
+                        </h3>
+
+                        {/* Fake List for Demo */}
+                        <div className="space-y-3">
+                            {/* Budi Madani RON95 Subsidy */}
+                            <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-slate-200">
+                                <div className="flex items-center gap-4">
+                                    <div className="p-3 bg-indigo-100 text-indigo-600 rounded-full">
+                                        <Fuel size={24} />
+                                    </div>
+                                    <div>
+                                        <p className="font-bold text-slate-800">Budi Madani RON95 Subsidy</p>
+                                        <div className="text-xs font-mono text-slate-500 mt-1 flex items-center gap-2">
+                                            <span className={`w-2 h-2 rounded-full ${!isBudiFrozen ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></span>
+                                            {tokenStatus}
+                                        </div>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => handleActionRequest(isBudiFrozen ? 'unfreeze' : 'freeze', 'budi')}
+                                    disabled={loading}
+                                    className={`p-3 rounded-full shadow-sm transition-all active:scale-95 ${!isBudiFrozen ? 'bg-red-50 text-red-600 hover:bg-red-100' : 'bg-green-50 text-green-600 hover:bg-green-100'}`}
+                                >
+                                    {!isBudiFrozen ? <Lock size={20} /> : <Unlock size={20} />}
+                                </button>
+                            </div>
+
+                            {/* Bantuan MyKad RM100 Cash Aid */}
+                            <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-slate-200">
+                                <div className="flex items-center gap-4">
+                                    <div className="p-3 bg-emerald-100 text-emerald-600 rounded-full">
+                                        <CreditCard size={24} />
+                                    </div>
+                                    <div>
+                                        <p className="font-bold text-slate-800">Bantuan MyKad RM100 Cash Aid</p>
+                                        <div className="text-xs font-mono text-slate-500 mt-1 flex items-center gap-2">
+                                            <span className={`w-2 h-2 rounded-full ${!isCashFrozen ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></span>
+                                            {cashAidStatus}
+                                        </div>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => handleActionRequest(isCashFrozen ? 'unfreeze' : 'freeze', 'cash')}
+                                    disabled={loading}
+                                    className={`p-3 rounded-full shadow-sm transition-all active:scale-95 ${!isCashFrozen ? 'bg-red-50 text-red-600 hover:bg-red-100' : 'bg-green-50 text-green-600 hover:bg-green-100'}`}
+                                >
+                                    {!isCashFrozen ? <Lock size={20} /> : <Unlock size={20} />}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="mt-6 pt-4 border-t border-slate-100">
+                        <button
+                            onClick={() => handleActionRequest(allFrozen ? 'unfreeze' : 'freeze', 'all')}
+                            className="w-full py-3 bg-slate-800 text-white rounded-xl text-sm font-bold shadow-lg shadow-slate-300 active:scale-95 transition-transform"
+                        >
+                            {allFrozen ? 'Unfreeze All Tokens' : 'Freeze All Tokens'}
+                        </button>
+                    </div>
+                </div>
+
+                {/* Biometric Modal */}
+                {showBiometric && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm animate-in fade-in duration-200">
+                        <div className="bg-white w-full max-w-xs p-8 rounded-3xl shadow-2xl flex flex-col items-center text-center animate-in zoom-in-95" onClick={handleBiometricSuccess}>
+                            <h3 className="text-lg font-bold text-slate-900 mb-2">Biometric Verification</h3>
+                            <p className="text-slate-500 text-xs mb-8">Scan fingerprint to confirm action</p>
+
+                            <div className="w-20 h-20 bg-red-50 rounded-full flex items-center justify-center mb-8 ring-4 ring-red-500/10 animate-pulse cursor-pointer">
+                                <Fingerprint size={48} className="text-red-500" />
+                            </div>
+
+                            <p className="text-[10px] text-slate-400 uppercase tracking-widest font-bold">Touch Sensor</p>
+                            <p className="text-[10px] text-slate-300 mt-2">(Click icon to simulate scan)</p>
+                        </div>
+                    </div>
+                )}
+            </div>
+        );
+    }
+
+    // Main View
     return (
         <div className="bg-slate-50 min-h-screen pb-24 font-sans flex flex-col animate-in fade-in duration-300">
             {/* Header */}
@@ -18,7 +185,7 @@ const Profile = ({ onNavigate }) => {
                     </div>
                     <div>
                         <h2 className="font-bold text-lg">Ahmad Bin Abdullah</h2>
-                        <p className="text-slate-400 text-xs font-mono tracking-wider">CITIZEN_001</p>
+                        <p className="text-slate-400 text-xs font-mono tracking-wider">{citizenId || 'CITIZEN_001'}</p>
                         <span className="inline-block mt-2 px-2 py-0.5 bg-green-500/20 text-green-400 text-[10px] font-bold rounded">VERIFIED IDENTITY</span>
                     </div>
                 </div>
@@ -26,7 +193,11 @@ const Profile = ({ onNavigate }) => {
                 {/* Settings list */}
                 <div className="space-y-2">
                     <SectionHeader title="Settings" />
-                    <SettingItem icon={<Shield size={18} />} title="Security & Privacy" />
+                    <SettingItem
+                        icon={<Shield size={18} />}
+                        title="Security & Privacy"
+                        onClick={() => setView('security')}
+                    />
                     <SettingItem icon={<Bell size={18} />} title="Notifications" badge="2" />
                     <SettingItem icon={<User size={18} />} title="Personal Information" />
                 </div>
@@ -59,8 +230,11 @@ const SectionHeader = ({ title }) => (
     <h3 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 px-1">{title}</h3>
 );
 
-const SettingItem = ({ icon, title, badge }) => (
-    <button className="w-full bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex items-center justify-between active:scale-98 transition-transform group">
+const SettingItem = ({ icon, title, badge, onClick }) => (
+    <button
+        onClick={onClick}
+        className="w-full bg-white p-4 rounded-xl shadow-sm border border-slate-100 flex items-center justify-between active:scale-98 transition-transform group"
+    >
         <div className="flex items-center gap-3 text-slate-700">
             <div className="text-slate-400 group-hover:text-blue-500 transition-colors">{icon}</div>
             <span className="font-medium text-sm">{title}</span>
