@@ -1,4 +1,10 @@
 require('dotenv').config();
+
+// For serverless environments, disable TLS certificate validation if needed
+if (process.env.VERCEL) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+}
+
 const { PrismaClient } = require('@prisma/client');
 const { PrismaPg } = require('@prisma/adapter-pg');
 const { Pool } = require('pg');
@@ -6,7 +12,7 @@ const { Pool } = require('pg');
 // Create PostgreSQL connection pool
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  ssl: process.env.DATABASE_URL?.includes('supabase') ? { rejectUnauthorized: false } : false
 });
 
 // Create Prisma adapter with pg pool
