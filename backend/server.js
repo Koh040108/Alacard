@@ -28,7 +28,9 @@ const rateLimit = require('express-rate-limit');
 const issueLimiter = rateLimit({
     windowMs: 60 * 60 * 1000, // 1 hour
     max: 10, // Limit each IP to 10 requests per windowMs
-    message: { error: 'Too many tokens issued from this IP, please try again after an hour' }
+    message: { error: 'Too many tokens issued from this IP, please try again after an hour' },
+    validate: { xForwardedForHeader: false }, // Disable validation for proxy
+    keyGenerator: (req) => req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown'
 });
 
 // General limit for verification/challenges
@@ -37,6 +39,8 @@ const apiLimiter = rateLimit({
     max: parseInt(process.env.RATE_LIMIT_MAX) || 1000,
     standardHeaders: true,
     legacyHeaders: false,
+    validate: { xForwardedForHeader: false }, // Disable validation for proxy
+    keyGenerator: (req) => req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown'
 });
 
 // Apply global API limiter to all routes starting with /
