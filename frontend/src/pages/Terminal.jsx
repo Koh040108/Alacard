@@ -20,6 +20,11 @@ const Terminal = () => {
     const [claimStatus, setClaimStatus] = useState(null); // 'claiming', 'success', 'error'
     const [claimResult, setClaimResult] = useState(null);
 
+    // Approval Flow State
+    const [approvalState, setApprovalState] = useState(null); // null, 'WAITING', 'APPROVED', 'REJECTED', 'EXPIRED'
+    const [verificationId, setVerificationId] = useState(null);
+    const [approvalCountdown, setApprovalCountdown] = useState(60);
+
     const scannerRef = useRef(null);
 
     const locations = [
@@ -202,19 +207,37 @@ const Terminal = () => {
 
             setRiskData(res.data.risk);
 
-            if (res.data.status === 'ELIGIBLE') {
-                setResult('ELIGIBLE');
+            // Check if verification passed cryptographic checks
+            if (res.data.status === 'ELIGIBLE' || res.data.status === 'WARNING') {
+                // Create pending verification for user approval
+                const pendingRes = await api.post('/create-pending-verification', {
+                    token_hash: res.data.details?.tokenHash,
+                    wallet_binding: res.data.details?.walletBinding,
+                    terminal_id: 'TERM-001',
+                    terminal_location: location,
+                    claim_amount: claimAmount,
+                    risk_score: res.data.risk?.score || 0,
+                    risk_reasons: res.data.risk?.reasons || []
+                });
+
+                if (pendingRes.data.verification_id) {
+                    setVerificationId(pendingRes.data.verification_id);
+                    setApprovalState('WAITING');
+                    setApprovalCountdown(60);
+                    // Start polling for approval
+                    pollApprovalStatus(pendingRes.data.verification_id);
+                }
             } else if (res.data.status === 'BLOCKED_FRAUD') {
                 setResult('BLOCKED_FRAUD');
-            } else if (res.data.status === 'WARNING') {
-                setResult('WARNING');
             } else {
                 setResult('NOT ELIGIBLE');
             }
         } catch (err) {
-            console.error(err);
+            console.error('Verification Error:', err);
+            console.error('Error Response:', err.response?.data);
             setResult('NOT ELIGIBLE');
-            alert(err.response?.data?.error || err.message);
+            const errorMsg = err.response?.data?.error || err.message;
+            alert('Verification Error: ' + errorMsg);
         }
         setLoading(false);
     };
@@ -245,6 +268,51 @@ const Terminal = () => {
             setClaimStatus('error');
             alert(err.response?.data?.error || "Claim Failed");
         }
+    };
+
+    // Poll for approval status
+    const pollApprovalStatus = async (verId) => {
+        const pollInterval = setInterval(async () => {
+            try {
+                const res = await api.get(`/verification-status/${verId}`);
+
+                if (res.data.status === 'APPROVED') {
+                    clearInterval(pollInterval);
+                    setApprovalState('APPROVED');
+                    setResult('ELIGIBLE');
+                } else if (res.data.status === 'REJECTED') {
+                    clearInterval(pollInterval);
+                    setApprovalState('REJECTED');
+                    setResult('USER_REJECTED');
+                } else if (res.data.status === 'EXPIRED') {
+                    clearInterval(pollInterval);
+                    setApprovalState('EXPIRED');
+                    setResult('TIMEOUT');
+                } else if (res.data.expires_in !== undefined) {
+                    setApprovalCountdown(Math.floor(res.data.expires_in));
+                }
+            } catch (err) {
+                console.error('Poll error:', err);
+            }
+        }, 2000); // Poll every 2 seconds
+
+        // Cleanup timeout
+        setTimeout(() => {
+            clearInterval(pollInterval);
+        }, 65000); // Stop polling after 65s max
+    };
+
+    // Reset function for new session
+    const resetSession = () => {
+        setNonce('');
+        setProofInput('');
+        setProcessedProof('');
+        setResult(null);
+        setClaimStatus(null);
+        setApprovalState(null);
+        setVerificationId(null);
+        setApprovalCountdown(60);
+        setRiskData(null);
     };
 
     return (
@@ -363,17 +431,46 @@ const Terminal = () => {
                 )}
             </div>
 
+            {/* Waiting for Approval Panel */}
+            {approvalState === 'WAITING' && (
+                <div className="glass-panel p-8 text-center animate-in zoom-in-95 duration-300 border-2 border-blue-500 bg-blue-500/10">
+                    <div className="w-16 h-16 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                    <h2 className="text-2xl font-bold text-white mb-2">Waiting for User Approval</h2>
+                    <p className="text-blue-200 mb-4">The citizen must approve this transaction on their device</p>
+
+                    <div className="flex items-center justify-center gap-2 bg-slate-900/50 p-4 rounded-lg mb-4">
+                        <span className="text-gray-400">Time Remaining:</span>
+                        <span className={`text-3xl font-mono font-bold ${approvalCountdown < 15 ? 'text-red-400 animate-pulse' : 'text-blue-400'}`}>
+                            {approvalCountdown}s
+                        </span>
+                    </div>
+
+                    <div className="text-xs text-gray-500">
+                        <p>Verification ID: {verificationId}</p>
+                    </div>
+
+                    <button
+                        onClick={resetSession}
+                        className="mt-6 text-sm text-gray-400 hover:text-white underline"
+                    >
+                        Cancel Transaction
+                    </button>
+                </div>
+            )}
+
             {result && (
                 <div className={`glass-panel p-8 text-center animate-in zoom-in-95 duration-300 border-2 ${result === 'ELIGIBLE' ? 'border-green-500 bg-green-500/10' :
                     result === 'BLOCKED_FRAUD' ? 'border-red-600 bg-red-900/20' :
                         result === 'WARNING' ? 'border-orange-500 bg-orange-500/10' :
-                            'border-red-500 bg-red-500/10'
+                            result === 'USER_REJECTED' ? 'border-purple-500 bg-purple-500/10' :
+                                result === 'TIMEOUT' ? 'border-gray-500 bg-gray-500/10' :
+                                    'border-red-500 bg-red-500/10'
                     }`}>
                     {result === 'ELIGIBLE' ? (
                         <>
                             <CheckCircle className="w-16 h-16 text-green-500 mx-auto mb-4" />
-                            <h2 className="text-3xl font-bold text-white mb-2">ELIGIBLE</h2>
-                            <p className="text-green-200">Subsidy Approved</p>
+                            <h2 className="text-3xl font-bold text-white mb-2">APPROVED</h2>
+                            <p className="text-green-200">User approved the transaction</p>
                         </>
                     ) : result === 'BLOCKED_FRAUD' ? (
                         <>
@@ -386,6 +483,24 @@ const Terminal = () => {
                             <AlertCircle className="w-16 h-16 text-orange-500 mx-auto mb-4" />
                             <h2 className="text-3xl font-bold text-orange-400 mb-2">WARNING</h2>
                             <p className="text-orange-200 mb-4">Unusual Activity Detected</p>
+                        </>
+                    ) : result === 'USER_REJECTED' ? (
+                        <>
+                            <XCircle className="w-16 h-16 text-purple-500 mx-auto mb-4" />
+                            <h2 className="text-3xl font-bold text-purple-400 mb-2">REJECTED BY USER</h2>
+                            <p className="text-purple-200 mb-4">The citizen declined this transaction</p>
+                            <button onClick={resetSession} className="mt-4 bg-slate-700 hover:bg-slate-600 text-white px-6 py-2 rounded-lg transition-colors">
+                                Start New Session
+                            </button>
+                        </>
+                    ) : result === 'TIMEOUT' ? (
+                        <>
+                            <RefreshCw className="w-16 h-16 text-gray-400 mx-auto mb-4" />
+                            <h2 className="text-3xl font-bold text-gray-300 mb-2">TIMED OUT</h2>
+                            <p className="text-gray-400 mb-4">User did not respond in time</p>
+                            <button onClick={resetSession} className="mt-4 bg-slate-700 hover:bg-slate-600 text-white px-6 py-2 rounded-lg transition-colors">
+                                Start New Session
+                            </button>
                         </>
                     ) : (
                         <>

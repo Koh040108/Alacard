@@ -68,11 +68,12 @@ async function analyzeRisk(db, tokenHash, terminalLocation, walletLocation) {
     }
 
 
-    // 1. Get History
-    const history = await db.all(
-        'SELECT * FROM audit_logs WHERE token_hash = ? ORDER BY audit_id DESC LIMIT 20',
-        [tokenHash]
-    );
+    // 1. Get History (Using Prisma instead of SQLite)
+    const history = await db.auditLog.findMany({
+        where: { token_hash: tokenHash },
+        orderBy: { audit_id: 'desc' },
+        take: 20
+    });
 
     // If no history, it's a first-time use (Low Risk but flagged as New)
     if (history.length === 0) {

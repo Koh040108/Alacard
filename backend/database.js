@@ -1,93 +1,62 @@
-const sqlite3 = require('sqlite3').verbose();
-const { open } = require('sqlite');
-const path = require('path');
+require('dotenv').config();
 
-let db;
+// For serverless environments, disable TLS certificate validation if needed
+if (process.env.VERCEL) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+}
+
+const { PrismaClient } = require('@prisma/client');
+const { PrismaPg } = require('@prisma/adapter-pg');
+const { Pool } = require('pg');
+
+// Create PostgreSQL connection pool
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes('supabase') ? { rejectUnauthorized: false } : false
+});
+
+// Create Prisma adapter with pg pool
+const adapter = new PrismaPg(pool);
+
+// Create Prisma client with adapter (required for Prisma 7)
+const prisma = new PrismaClient({
+  adapter,
+  log: process.env.NODE_ENV === 'development' ? ['info', 'warn', 'error'] : ['error'],
+});
+
+let initialized = false;
 
 async function initDB() {
-  if (db) return db;
-
-  const isVercel = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_VERSION;
-  const dbPath = isVercel
-    ? path.join('/tmp', 'alacard.db')
-    : path.join(__dirname, 'alacard.db');
-
-  db = await open({
-    filename: dbPath,
-    driver: sqlite3.Database
-  });
-
-  await db.exec(`
-    CREATE TABLE IF NOT EXISTS citizens (
-      citizen_id TEXT PRIMARY KEY,
-      income INTEGER,
-      eligibility_status TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS issued_tokens (
-      token_id TEXT PRIMARY KEY,
-      token_hash TEXT,
-      expiry TEXT,
-      issuer_signature TEXT,
-      status TEXT DEFAULT 'ACTIVE'
-    );
-
-    CREATE TABLE IF NOT EXISTS verification_terminals (
-      terminal_id TEXT PRIMARY KEY,
-      location TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS audit_logs (
-      audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
-      token_hash TEXT,
-      terminal_id TEXT,
-      location TEXT,
-      risk_data TEXT,
-      timestamp TEXT,
-      result TEXT,
-      prev_hash TEXT,
-      current_hash TEXT
-    );
-  `);
-
-  // Migration: Add location/risk column if it doesn't exist
-  try {
-    await db.exec('ALTER TABLE audit_logs ADD COLUMN location TEXT');
-  } catch (e) { }
+  if (initialized) return prisma;
 
   try {
-    await db.exec('ALTER TABLE audit_logs ADD COLUMN risk_data TEXT');
-    console.log("Migrated: Added risk_data column");
-  } catch (e) { }
+    // Test connection
+    await prisma.$connect();
+    console.log('Database connected (Prisma/PostgreSQL)');
+    initialized = true;
+    return prisma;
+  } catch (error) {
+    console.error('Failed to connect to database:', error.message);
 
-  try {
-    await db.exec('ALTER TABLE audit_logs ADD COLUMN wallet_binding TEXT');
-    console.log("Migrated: Added wallet_binding column");
-  } catch (e) { }
-
-  try {
-    await db.exec("ALTER TABLE issued_tokens ADD COLUMN status TEXT DEFAULT 'ACTIVE'");
-    console.log("Migrated: Added status column to issued_tokens");
-  } catch (e) { }
-
-  try {
-    await db.exec("ALTER TABLE citizens ADD COLUMN subsidy_quota REAL DEFAULT 300.00");
-    console.log("Migrated: Added subsidy_quota column to citizens");
-  } catch (e) { }
-
-  try {
-    await db.exec('ALTER TABLE issued_tokens ADD COLUMN citizen_id TEXT');
-    console.log("Migrated: Added citizen_id column to issued_tokens");
-  } catch (e) { }
-
-
-  console.log('Database initialized');
-  return db;
+    // Fallback: If DATABASE_URL is not set, provide helpful message
+    if (!process.env.DATABASE_URL) {
+      console.error('\n⚠️  DATABASE_URL environment variable is not set!');
+      console.error('   Please create a .env file with your Supabase connection string.');
+      console.error('   See .env.example for the required format.\n');
+    }
+    throw error;
+  }
 }
 
 async function getDB() {
-  if (!db) await initDB();
-  return db;
+  if (!initialized) await initDB();
+  return prisma;
 }
 
-module.exports = { initDB, getDB };
+// Graceful shutdown
+process.on('beforeExit', async () => {
+  await prisma.$disconnect();
+  await pool.end();
+});
+
+module.exports = { initDB, getDB, prisma };
