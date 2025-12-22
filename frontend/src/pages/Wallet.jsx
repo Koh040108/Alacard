@@ -586,7 +586,7 @@ const Wallet = () => {
             {/* Security Action B Modal (Biometric Freeze) */}
             {showSecurityActionB && (
                 <div className="fixed inset-0 z-[110] flex items-center justify-center bg-red-900/90 backdrop-blur-md animate-in fade-in duration-200">
-                    <div className="w-full max-w-xs mx-4 bg-white rounded-3xl p-8 text-center shadow-2xl animate-in zoom-in-95" onClick={handleSecurityActionBSuccess}>
+                    <div className="w-full max-w-xs mx-4 bg-white rounded-3xl p-8 mb-20 text-center shadow-2xl animate-in zoom-in-95" onClick={handleSecurityActionBSuccess}>
                         <div className="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-6 ring-8 ring-red-500/20 animate-pulse cursor-pointer">
                             <Fingerprint size={48} className="text-red-600" />
                         </div>

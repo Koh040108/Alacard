@@ -87,29 +87,41 @@ async function analyzeRisk(db, tokenHash, terminalLocation, walletLocation) {
         };
     }
 
+    // 2. Frequency Check Baseline (Last Activity)
     const lastLog = history[0];
-    const lastTime = new Date(lastLog.timestamp).getTime();
+    const lastActivityTime = new Date(lastLog.timestamp).getTime();
     const currentTime = Date.now();
-    const timeDiffHours = (currentTime - lastTime) / (1000 * 60 * 60);
+    const timeDiffHours = (currentTime - lastActivityTime) / (1000 * 60 * 60);
 
-    // Parse Locations
-    let lastLocationObj = null;
-    try {
-        lastLocationObj = JSON.parse(lastLog.location);
-    } catch (e) {
-        lastLocationObj = { state: 'Unknown' };
+    // 3. Find Last Valid Physical Location for Impossible Travel
+    let lastValidLog = null;
+    let lastCoords = null;
+    let lastValidTime = null;
+
+    for (const log of history) {
+        try {
+            const locObj = JSON.parse(log.location);
+            if (locObj && locObj.state && LOCATION_MAP[locObj.state]) {
+                lastValidLog = log;
+                lastCoords = LOCATION_MAP[locObj.state];
+                lastValidTime = new Date(log.timestamp).getTime();
+                break; // Found the most recent valid physical log
+            }
+        } catch (e) {
+            // Ignore logs with non-JSON location (e.g. "My Profile")
+        }
     }
 
     // If we can map the coords, do physics checks (Impossible Travel)
-    if (terminalCoords && lastLocationObj && LOCATION_MAP[lastLocationObj.state]) {
-        const lastCoords = LOCATION_MAP[lastLocationObj.state];
+    if (terminalCoords && lastValidLog && lastCoords) {
+        const travelTimeDiff = (currentTime - lastValidTime) / (1000 * 60 * 60);
 
         // DISTANCE Check (in meters, convert to km)
         const distanceKm = geolib.getDistance(lastCoords, terminalCoords) / 1000;
 
         // VELOCITY Check
-        if (distanceKm > 50 && timeDiffHours > 0.01) { // Ignore small jitters
-            const velocity = distanceKm / timeDiffHours;
+        if (distanceKm > 50 && travelTimeDiff > 0.01) { // Ignore small jitters
+            const velocity = distanceKm / travelTimeDiff;
 
             if (velocity > MAX_VELOCITY_KMH) {
                 riskScore += 80; // Critical impact
@@ -143,7 +155,7 @@ async function analyzeRisk(db, tokenHash, terminalLocation, walletLocation) {
     }
 
     // FREQUENCY Check
-    // If < 1 min since last tx
+    // If < 1 min since last tx (ANY tx)
     if (timeDiffHours < (1 / 60)) {
         riskScore += 20;
         reasons.push("High Frequency Activity");

@@ -1,13 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { User, Settings, Shield, Bell, LogOut, ChevronRight, HelpCircle, Lock, Unlock, Fingerprint, ChevronLeft } from 'lucide-react';
+import { User, Settings, Shield, Bell, LogOut, ChevronRight, HelpCircle, Lock, Unlock, Fingerprint, ChevronLeft, Fuel, CreditCard, Globe, Moon } from 'lucide-react';
 import api from '../../utils/api';
 
 const Profile = ({ onNavigate, token, citizenId }) => {
     const [view, setView] = useState('main'); // main, security
     const [tokenStatus, setTokenStatus] = useState('ACTIVE');
+    const [cashAidStatus, setCashAidStatus] = useState('ACTIVE'); // Simulated second token
     const [loading, setLoading] = useState(false);
     const [showBiometric, setShowBiometric] = useState(false);
-    const [pendingAction, setPendingAction] = useState(null); // 'freeze' | 'unfreeze'
+    const [pendingAction, setPendingAction] = useState(null); // { type: 'freeze'|'unfreeze', target: 'budi'|'cash'|'all' }
 
     // Fetch initial status
     useEffect(() => {
@@ -21,24 +22,38 @@ const Profile = ({ onNavigate, token, citizenId }) => {
         try {
             const res = await api.post('/token-status', { token });
             setTokenStatus(res.data.status);
+            // In a real app, we'd fetch the second token's status here too.
         } catch (err) {
             console.error("Status check failed", err);
         }
     };
 
-    const handleActionRequest = (action) => {
-        setPendingAction(action);
+    const handleActionRequest = (type, target) => {
+        setPendingAction({ type, target });
         setShowBiometric(true);
     };
 
     const handleBiometricSuccess = async () => {
+        const { type, target } = pendingAction;
         setShowBiometric(false);
         setLoading(true);
+
         try {
-            const endpoint = pendingAction === 'freeze' ? '/freeze-token' : '/unfreeze-token';
-            await api.post(endpoint, { token });
-            await checkStatus();
-            alert(`Success: Token ${pendingAction === 'freeze' ? 'Frozen' : 'Activated'}`);
+            // Logic for Budi Madani (Real Token)
+            if (target === 'budi' || target === 'all') {
+                const endpoint = type === 'freeze' ? '/freeze-token' : '/unfreeze-token';
+                await api.post(endpoint, { token });
+                await checkStatus();
+            }
+
+            // Logic for Cash Aid (Simulated)
+            if (target === 'cash' || target === 'all') {
+                // Simulate network delay
+                await new Promise(r => setTimeout(r, 500));
+                setCashAidStatus(type === 'freeze' ? 'FROZEN' : 'ACTIVE');
+            }
+
+            alert(`Success: ${target === 'all' ? 'All Tokens' : 'Token'} ${type === 'freeze' ? 'Frozen' : 'Activated'}`);
         } catch (err) {
             alert("Action Failed: " + err.message);
         } finally {
@@ -49,6 +64,10 @@ const Profile = ({ onNavigate, token, citizenId }) => {
 
     // Sub-view: Security
     if (view === 'security') {
+        const isBudiFrozen = tokenStatus === 'FROZEN';
+        const isCashFrozen = cashAidStatus === 'FROZEN';
+        const allFrozen = isBudiFrozen && isCashFrozen;
+
         return (
             <div className="bg-slate-50 min-h-screen pb-24 font-sans flex flex-col animate-in slide-in-from-right duration-300">
                 <div className="bg-white px-6 pt-12 pb-6 shadow-sm sticky top-0 z-10 flex items-center gap-4">
@@ -71,44 +90,61 @@ const Profile = ({ onNavigate, token, citizenId }) => {
 
                         {/* Fake List for Demo */}
                         <div className="space-y-3">
-                            {/* Petrol Token (Linked to Real Token) */}
+                            {/* Budi Madani RON95 Subsidy */}
                             <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-slate-200">
-                                <div>
-                                    <p className="font-bold text-sm text-slate-700">Petrol Subsidy (RON95)</p>
-                                    <p className="text-[10px] text-slate-400 font-mono">ID: {token ? token.substring(0, 12) + '...' : 'N/A'}</p>
-                                    <div className={`mt-2 text-[10px] font-bold px-2 py-0.5 rounded w-fit ${tokenStatus === 'ACTIVE' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                        {tokenStatus}
+                                <div className="flex items-center gap-4">
+                                    <div className="p-3 bg-indigo-100 text-indigo-600 rounded-full">
+                                        <Fuel size={24} />
+                                    </div>
+                                    <div>
+                                        <p className="font-bold text-slate-800">Budi Madani RON95 Subsidy</p>
+                                        <div className="text-xs font-mono text-slate-500 mt-1 flex items-center gap-2">
+                                            <span className={`w-2 h-2 rounded-full ${!isBudiFrozen ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></span>
+                                            {tokenStatus}
+                                        </div>
                                     </div>
                                 </div>
                                 <button
-                                    onClick={() => handleActionRequest(tokenStatus === 'ACTIVE' ? 'freeze' : 'unfreeze')}
+                                    onClick={() => handleActionRequest(isBudiFrozen ? 'unfreeze' : 'freeze', 'budi')}
                                     disabled={loading}
-                                    className={`p-3 rounded-full shadow-sm transition-all active:scale-95 ${tokenStatus === 'ACTIVE' ? 'bg-red-50 text-red-600 hover:bg-red-100' : 'bg-green-50 text-green-600 hover:bg-green-100'}`}
+                                    className={`p-3 rounded-full shadow-sm transition-all active:scale-95 ${!isBudiFrozen ? 'bg-red-50 text-red-600 hover:bg-red-100' : 'bg-green-50 text-green-600 hover:bg-green-100'}`}
                                 >
-                                    {tokenStatus === 'ACTIVE' ? <Lock size={20} /> : <Unlock size={20} />}
+                                    {!isBudiFrozen ? <Lock size={20} /> : <Unlock size={20} />}
                                 </button>
                             </div>
 
-                            {/* Dummy Diesel Token (Visual Only) */}
-                            <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-slate-200 opacity-60">
-                                <div>
-                                    <p className="font-bold text-sm text-slate-700">Diesel Subsidy</p>
-                                    <p className="text-[10px] text-slate-400 font-mono">NOT ELIGIBLE</p>
+                            {/* Bantuan MyKad RM100 Cash Aid */}
+                            <div className="flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-slate-200">
+                                <div className="flex items-center gap-4">
+                                    <div className="p-3 bg-emerald-100 text-emerald-600 rounded-full">
+                                        <CreditCard size={24} />
+                                    </div>
+                                    <div>
+                                        <p className="font-bold text-slate-800">Bantuan MyKad RM100 Cash Aid</p>
+                                        <div className="text-xs font-mono text-slate-500 mt-1 flex items-center gap-2">
+                                            <span className={`w-2 h-2 rounded-full ${!isCashFrozen ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></span>
+                                            {cashAidStatus}
+                                        </div>
+                                    </div>
                                 </div>
-                                <button disabled className="p-3 rounded-full bg-slate-100 text-slate-400 cursor-not-allowed">
-                                    <Lock size={20} />
+                                <button
+                                    onClick={() => handleActionRequest(isCashFrozen ? 'unfreeze' : 'freeze', 'cash')}
+                                    disabled={loading}
+                                    className={`p-3 rounded-full shadow-sm transition-all active:scale-95 ${!isCashFrozen ? 'bg-red-50 text-red-600 hover:bg-red-100' : 'bg-green-50 text-green-600 hover:bg-green-100'}`}
+                                >
+                                    {!isCashFrozen ? <Lock size={20} /> : <Unlock size={20} />}
                                 </button>
                             </div>
                         </div>
+                    </div>
 
-                        <div className="mt-6 pt-4 border-t border-slate-100">
-                            <button
-                                onClick={() => handleActionRequest(tokenStatus === 'ACTIVE' ? 'freeze' : 'unfreeze')}
-                                className="w-full py-3 bg-slate-800 text-white rounded-xl text-sm font-bold shadow-lg shadow-slate-300 active:scale-95 transition-transform"
-                            >
-                                {tokenStatus === 'ACTIVE' ? 'Freeze All Tokens' : 'Unfreeze All Tokens'}
-                            </button>
-                        </div>
+                    <div className="mt-6 pt-4 border-t border-slate-100">
+                        <button
+                            onClick={() => handleActionRequest(allFrozen ? 'unfreeze' : 'freeze', 'all')}
+                            className="w-full py-3 bg-slate-800 text-white rounded-xl text-sm font-bold shadow-lg shadow-slate-300 active:scale-95 transition-transform"
+                        >
+                            {allFrozen ? 'Unfreeze All Tokens' : 'Freeze All Tokens'}
+                        </button>
                     </div>
                 </div>
 
@@ -132,6 +168,7 @@ const Profile = ({ onNavigate, token, citizenId }) => {
         );
     }
 
+    // Main View
     return (
         <div className="bg-slate-50 min-h-screen pb-24 font-sans flex flex-col animate-in fade-in duration-300">
             {/* Header */}
