@@ -431,6 +431,193 @@ const signatureCache = {
     }
 };
 
+// =============================================================================
+// VERIFICATION APPROVAL FLOW ENDPOINTS
+// =============================================================================
+
+// POST /create-pending-verification
+// Called after proof is validated - creates a pending request for wallet approval
+app.post('/create-pending-verification', async (req, res) => {
+    console.log('[DEBUG] /create-pending-verification body:', JSON.stringify(req.body));
+    const { token_hash, wallet_binding, terminal_id, terminal_location, claim_amount, risk_score, risk_reasons } = req.body;
+
+    if (!token_hash || !wallet_binding) {
+        console.log('[DEBUG] Missing data - token_hash:', token_hash, 'wallet_binding:', wallet_binding);
+        return res.status(400).json({ error: 'Missing token_hash or wallet_binding' });
+    }
+
+    try {
+        const verification_id = crypto.generateNonce(16); // 16-char random ID
+        const created_at = new Date().toISOString();
+
+        await req.db.run(
+            `INSERT INTO pending_verifications 
+             (verification_id, token_hash, wallet_binding, terminal_id, terminal_location, claim_amount, risk_score, risk_reasons, status, created_at) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)`,
+            [verification_id, token_hash, wallet_binding, terminal_id, JSON.stringify(terminal_location), claim_amount || 0, risk_score || 0, JSON.stringify(risk_reasons || []), created_at]
+        );
+
+        res.json({ verification_id, status: 'PENDING', created_at });
+    } catch (err) {
+        console.error('Create pending verification error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /my-pending-verification
+// Wallet polls this to check for pending approval requests
+app.post('/my-pending-verification', async (req, res) => {
+    const { token } = req.body;
+
+    if (!token) {
+        return res.status(400).json({ error: 'Missing token' });
+    }
+
+    try {
+        // Extract wallet binding from token
+        const parsed = crypto.parseToken(token);
+        const walletBinding = parsed.payload.wbind;
+
+        // Find any pending verification for this wallet
+        const pending = await req.db.get(
+            `SELECT * FROM pending_verifications 
+             WHERE wallet_binding = ? AND status = 'PENDING' 
+             ORDER BY created_at DESC LIMIT 1`,
+            [walletBinding]
+        );
+
+        if (!pending) {
+            return res.json({ pending: false });
+        }
+
+        // Check if expired (60 seconds timeout)
+        const createdAt = new Date(pending.created_at);
+        const now = new Date();
+        const ageSeconds = (now - createdAt) / 1000;
+
+        if (ageSeconds > 60) {
+            // Auto-reject expired verifications
+            await req.db.run(
+                `UPDATE pending_verifications SET status = 'EXPIRED', responded_at = ? WHERE verification_id = ?`,
+                [now.toISOString(), pending.verification_id]
+            );
+            return res.json({ pending: false });
+        }
+
+        res.json({
+            pending: true,
+            verification_id: pending.verification_id,
+            terminal_id: pending.terminal_id,
+            terminal_location: JSON.parse(pending.terminal_location || '{}'),
+            claim_amount: pending.claim_amount,
+            risk_score: pending.risk_score,
+            risk_reasons: JSON.parse(pending.risk_reasons || '[]'),
+            created_at: pending.created_at,
+            expires_in: Math.max(0, 60 - ageSeconds)
+        });
+    } catch (err) {
+        console.error('My pending verification error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// POST /respond-verification
+// Wallet sends approval or rejection
+app.post('/respond-verification', async (req, res) => {
+    const { verification_id, token, approved } = req.body;
+
+    if (!verification_id || !token || approved === undefined) {
+        return res.status(400).json({ error: 'Missing verification_id, token, or approved' });
+    }
+
+    try {
+        // Verify wallet owns this verification
+        const parsed = crypto.parseToken(token);
+        const walletBinding = parsed.payload.wbind;
+
+        const pending = await req.db.get(
+            `SELECT * FROM pending_verifications WHERE verification_id = ?`,
+            [verification_id]
+        );
+
+        if (!pending) {
+            return res.status(404).json({ error: 'Verification not found' });
+        }
+
+        if (pending.wallet_binding !== walletBinding) {
+            return res.status(403).json({ error: 'Wallet does not own this verification' });
+        }
+
+        if (pending.status !== 'PENDING') {
+            return res.status(400).json({ error: 'Verification already responded', status: pending.status });
+        }
+
+        // Update status
+        const newStatus = approved ? 'APPROVED' : 'REJECTED';
+        const responded_at = new Date().toISOString();
+
+        await req.db.run(
+            `UPDATE pending_verifications SET status = ?, responded_at = ? WHERE verification_id = ?`,
+            [newStatus, responded_at, verification_id]
+        );
+
+        // Log to audit
+        await logAudit(req.db, pending.token_hash, walletBinding, pending.terminal_id, pending.terminal_location,
+            approved ? 'USER_APPROVED' : 'USER_REJECTED', { approved, verification_id });
+
+        res.json({ success: true, status: newStatus });
+    } catch (err) {
+        console.error('Respond verification error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /verification-status/:id
+// Terminal polls this to check approval status
+app.get('/verification-status/:id', async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const verification = await req.db.get(
+            `SELECT * FROM pending_verifications WHERE verification_id = ?`,
+            [id]
+        );
+
+        if (!verification) {
+            return res.status(404).json({ error: 'Verification not found' });
+        }
+
+        // Check expiry for PENDING status
+        if (verification.status === 'PENDING') {
+            const createdAt = new Date(verification.created_at);
+            const now = new Date();
+            const ageSeconds = (now - createdAt) / 1000;
+
+            if (ageSeconds > 60) {
+                // Auto-reject
+                await req.db.run(
+                    `UPDATE pending_verifications SET status = 'EXPIRED', responded_at = ? WHERE verification_id = ?`,
+                    [now.toISOString(), id]
+                );
+                return res.json({ status: 'EXPIRED', message: 'User did not respond in time' });
+            }
+
+            return res.json({
+                status: 'PENDING',
+                expires_in: Math.max(0, 60 - ageSeconds)
+            });
+        }
+
+        res.json({
+            status: verification.status,
+            responded_at: verification.responded_at
+        });
+    } catch (err) {
+        console.error('Verification status error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // GET /audit-logs
 app.get('/audit-logs', async (req, res) => {
     const logs = await prisma.auditLog.findMany({
