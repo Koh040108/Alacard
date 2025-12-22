@@ -42,6 +42,14 @@ const apiLimiter = rateLimit({
 // Apply global API limiter to all routes starting with /
 app.use(apiLimiter);
 
+// Strip /api prefix for Vercel deployment (routes come in as /api/xxx but handlers expect /xxx)
+app.use((req, res, next) => {
+    if (req.url.startsWith('/api/')) {
+        req.url = req.url.replace('/api', '');
+    }
+    next();
+});
+
 app.use(bodyParser.json());
 
 // =============================================================================
