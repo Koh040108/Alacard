@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { generateWalletKeyPair, generateProof, importPrivateKeyJwk, parseToken } from '../crypto';
 import api from '../utils/api';
 import { QRCodeCanvas } from 'qrcode.react';
-import { Shield, Check, Copy, Scan, X } from 'lucide-react';
+import { Shield, Check, Copy, Scan, X, Fingerprint, AlertTriangle } from 'lucide-react';
 
 // Sub-pages
 import CitizenHome from './citizen/Home';
@@ -45,6 +45,7 @@ const Wallet = () => {
     const [pendingVerification, setPendingVerification] = useState(null);
     const [showApprovalModal, setShowApprovalModal] = useState(false);
     const [approvalLoading, setApprovalLoading] = useState(false);
+    const [showSecurityActionB, setShowSecurityActionB] = useState(false); // New State for High Risk Reject
 
     useEffect(() => {
         const savedKeys = JSON.parse(localStorage.getItem('alacard_keys'));
@@ -68,7 +69,8 @@ const Wallet = () => {
                     setShowApprovalModal(true);
                 } else {
                     // If no pending and modal was open, close it
-                    if (pendingVerification && showApprovalModal) {
+                    // BUT only if we are not in the middle of Security Action B
+                    if (pendingVerification && showApprovalModal && !showSecurityActionB) {
                         setPendingVerification(null);
                         setShowApprovalModal(false);
                     }
@@ -79,7 +81,7 @@ const Wallet = () => {
         }, 2000); // Poll every 2 seconds
 
         return () => clearInterval(pollInterval);
-    }, [token, pendingVerification, showApprovalModal]);
+    }, [token, pendingVerification, showApprovalModal, showSecurityActionB]);
 
     // Handle approval response
     const handleApprovalResponse = async (approved) => {
@@ -100,6 +102,45 @@ const Wallet = () => {
         }
     };
 
+
+
+    const handleRejectClick = () => {
+        // High Risk check (Score > 20 is the warning threshold in existing code)
+        if (pendingVerification?.risk_score > 20) {
+            setShowSecurityActionB(true);
+        } else {
+            handleApprovalResponse(false);
+        }
+    };
+
+    const handleSecurityActionBSuccess = async () => {
+        if (!pendingVerification) {
+            alert("Transaction session expired or invalid.");
+            setShowSecurityActionB(false);
+            setShowApprovalModal(false);
+            return;
+        }
+
+        setShowSecurityActionB(false);
+        setApprovalLoading(true);
+        try {
+            // 1. Freeze Token
+            await api.post('/freeze-token', { token });
+            // 2. Reject Transaction
+            await api.post('/respond-verification', {
+                verification_id: pendingVerification.verification_id,
+                token: token,
+                approved: false
+            });
+            setShowApprovalModal(false);
+            setPendingVerification(null);
+            alert("Security Alert: Token has been frozen for your protection.");
+        } catch (err) {
+            alert('Failed to execute Security Action: ' + (err.response?.data?.error || err.message));
+        } finally {
+            setApprovalLoading(false);
+        }
+    };
 
     // -------------------------------------------------------------------------
     // IDENTITY MANAGEMENT (Onboarding)
@@ -316,7 +357,11 @@ const Wallet = () => {
 
                 {/* Profile -> New Profile Screen */}
                 {activeTab === 'profile' && (
-                    <Profile onNavigate={(tab) => setActiveTab(tab)} />
+                    <Profile
+                        onNavigate={(tab) => setActiveTab(tab)}
+                        token={token}
+                        citizenId={citizenId}
+                    />
                 )}
             </div>
 
@@ -520,11 +565,11 @@ const Wallet = () => {
                         {/* Buttons */}
                         <div className="flex gap-3">
                             <button
-                                onClick={() => handleApprovalResponse(false)}
+                                onClick={handleRejectClick}
                                 disabled={approvalLoading}
                                 className="flex-1 bg-red-600 hover:bg-red-500 text-white font-bold py-4 rounded-xl transition-all active:scale-95 disabled:opacity-50"
                             >
-                                {approvalLoading ? '...' : 'Reject'}
+                                {approvalLoading ? '...' : (pendingVerification.risk_score > 20 ? 'Reject & Secure' : 'Reject')}
                             </button>
                             <button
                                 onClick={() => handleApprovalResponse(true)}
@@ -534,6 +579,34 @@ const Wallet = () => {
                                 {approvalLoading ? '...' : 'Approve'}
                             </button>
                         </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Security Action B Modal (Biometric Freeze) */}
+            {showSecurityActionB && (
+                <div className="fixed inset-0 z-[110] flex items-center justify-center bg-red-900/90 backdrop-blur-md animate-in fade-in duration-200">
+                    <div className="w-full max-w-xs mx-4 bg-white rounded-3xl p-8 text-center shadow-2xl animate-in zoom-in-95" onClick={handleSecurityActionBSuccess}>
+                        <div className="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-6 ring-8 ring-red-500/20 animate-pulse cursor-pointer">
+                            <Fingerprint size={48} className="text-red-600" />
+                        </div>
+
+                        <h3 className="text-xl font-bold text-red-600 mb-2">High Risk Detected</h3>
+                        <p className="text-slate-600 text-sm mb-6">
+                            Authorized biometric scan required to <span className="font-bold">Freeze Token</span> and block this transaction.
+                        </p>
+
+                        <div className="text-[10px] uppercase font-bold text-slate-400 tracking-widest">
+                            Touch ID / Face ID
+                        </div>
+                        <p className="text-[10px] text-slate-300 mt-2">(Click icon to simulate scan)</p>
+
+                        <button
+                            onClick={(e) => { e.stopPropagation(); setShowSecurityActionB(false); }}
+                            className="mt-8 text-slate-400 text-sm font-bold underline"
+                        >
+                            Cancel
+                        </button>
                     </div>
                 </div>
             )}

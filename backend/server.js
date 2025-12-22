@@ -19,6 +19,9 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
+// Trust the first proxy (e.g., Vercel, Nginx, etc.)
+app.set('trust proxy', 1);
+
 // =============================================================================
 // RATE LIMITING
 // =============================================================================
@@ -29,8 +32,8 @@ const issueLimiter = rateLimit({
     windowMs: 60 * 60 * 1000, // 1 hour
     max: 10, // Limit each IP to 10 requests per windowMs
     message: { error: 'Too many tokens issued from this IP, please try again after an hour' },
-    validate: { xForwardedForHeader: false }, // Disable validation for proxy
-    keyGenerator: (req) => req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown'
+    standardHeaders: true,
+    legacyHeaders: false,
 });
 
 // General limit for verification/challenges
@@ -39,8 +42,6 @@ const apiLimiter = rateLimit({
     max: parseInt(process.env.RATE_LIMIT_MAX) || 1000,
     standardHeaders: true,
     legacyHeaders: false,
-    validate: { xForwardedForHeader: false }, // Disable validation for proxy
-    keyGenerator: (req) => req.headers['x-forwarded-for']?.split(',')[0] || req.ip || 'unknown'
 });
 
 // Apply global API limiter to all routes starting with /
@@ -141,7 +142,9 @@ initDB().then(async () => {
     loadOrGenerateKeys();
 
     // Auto-seed if citizens table is empty (for Stateless Demos)
+    console.log('[DEBUG] Checking database state (counting citizens)...');
     const count = await prisma.citizen.count();
+    console.log('[DEBUG] Database state: found', count, 'citizens');
     if (count === 0) {
         console.log('Database empty. Auto-seeding default citizens...');
         await prisma.citizen.createMany({
