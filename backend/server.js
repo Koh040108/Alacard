@@ -570,7 +570,7 @@ app.post('/respond-verification', async (req, res) => {
         });
 
         // Log to audit
-        await logAudit(prisma, pending.token_hash, walletBinding, pending.terminal_id, pending.terminal_location,
+        await logAudit(pending.token_hash, walletBinding, pending.terminal_id, pending.terminal_location,
             approved ? 'USER_APPROVED' : 'USER_REJECTED', { approved, verification_id });
 
         res.json({ success: true, status: newStatus });
