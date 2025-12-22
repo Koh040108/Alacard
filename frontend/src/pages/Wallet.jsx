@@ -41,6 +41,11 @@ const Wallet = () => {
     const [locationError, setLocationError] = useState(null);
     const [manualLocation, setManualLocation] = useState('');
 
+    // Approval Flow State
+    const [pendingVerification, setPendingVerification] = useState(null);
+    const [showApprovalModal, setShowApprovalModal] = useState(false);
+    const [approvalLoading, setApprovalLoading] = useState(false);
+
     useEffect(() => {
         const savedKeys = JSON.parse(localStorage.getItem('alacard_keys'));
         const savedToken = JSON.parse(localStorage.getItem('alacard_token'));
@@ -50,6 +55,50 @@ const Wallet = () => {
         if (savedToken) setToken(savedToken);
         if (savedCitizenId) setCitizenId(savedCitizenId);
     }, []);
+
+    // Poll for pending verification requests
+    useEffect(() => {
+        if (!token) return;
+
+        const pollInterval = setInterval(async () => {
+            try {
+                const res = await api.post('/my-pending-verification', { token });
+                if (res.data.pending) {
+                    setPendingVerification(res.data);
+                    setShowApprovalModal(true);
+                } else {
+                    // If no pending and modal was open, close it
+                    if (pendingVerification && showApprovalModal) {
+                        setPendingVerification(null);
+                        setShowApprovalModal(false);
+                    }
+                }
+            } catch (err) {
+                console.error('Pending verification poll error:', err);
+            }
+        }, 2000); // Poll every 2 seconds
+
+        return () => clearInterval(pollInterval);
+    }, [token, pendingVerification, showApprovalModal]);
+
+    // Handle approval response
+    const handleApprovalResponse = async (approved) => {
+        if (!pendingVerification) return;
+        setApprovalLoading(true);
+        try {
+            await api.post('/respond-verification', {
+                verification_id: pendingVerification.verification_id,
+                token: token,
+                approved: approved
+            });
+            setShowApprovalModal(false);
+            setPendingVerification(null);
+        } catch (err) {
+            alert('Failed to respond: ' + (err.response?.data?.error || err.message));
+        } finally {
+            setApprovalLoading(false);
+        }
+    };
 
 
     // -------------------------------------------------------------------------
@@ -418,6 +467,73 @@ const Wallet = () => {
                                 </div>
                             </>
                         )}
+                    </div>
+                </div>
+            )}
+
+            {/* Approval Request Modal */}
+            {showApprovalModal && pendingVerification && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className="w-full max-w-sm mx-4 bg-slate-900 rounded-3xl p-6 shadow-2xl border border-slate-700 animate-in zoom-in-95">
+
+                        {/* Header */}
+                        <div className="text-center mb-6">
+                            <div className="w-16 h-16 bg-orange-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                                <Shield className="w-8 h-8 text-orange-400" />
+                            </div>
+                            <h2 className="text-xl font-bold text-white mb-1">Transaction Request</h2>
+                            <p className="text-slate-400 text-sm">A terminal wants to verify your subsidy</p>
+                        </div>
+
+                        {/* Details */}
+                        <div className="bg-slate-800 rounded-xl p-4 mb-6 space-y-3">
+                            <div className="flex justify-between items-center">
+                                <span className="text-slate-400 text-sm">Terminal</span>
+                                <span className="text-white font-mono text-sm">{pendingVerification.terminal_id}</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                                <span className="text-slate-400 text-sm">Location</span>
+                                <span className="text-white text-sm">{pendingVerification.terminal_location?.city || pendingVerification.terminal_location?.state || 'Unknown'}</span>
+                            </div>
+                            {pendingVerification.claim_amount > 0 && (
+                                <div className="flex justify-between items-center">
+                                    <span className="text-slate-400 text-sm">Amount</span>
+                                    <span className="text-green-400 font-bold">RM {pendingVerification.claim_amount}</span>
+                                </div>
+                            )}
+                            <div className="flex justify-between items-center">
+                                <span className="text-slate-400 text-sm">Expires In</span>
+                                <span className={`font-mono font-bold ${pendingVerification.expires_in < 15 ? 'text-red-400 animate-pulse' : 'text-blue-400'}`}>
+                                    {Math.floor(pendingVerification.expires_in)}s
+                                </span>
+                            </div>
+                        </div>
+
+                        {/* Risk Warning */}
+                        {pendingVerification.risk_score > 20 && (
+                            <div className="bg-orange-500/10 border border-orange-500/30 rounded-xl p-3 mb-6">
+                                <p className="text-orange-400 text-xs font-bold mb-1">⚠️ Risk Warning</p>
+                                <p className="text-orange-200 text-xs">{pendingVerification.risk_reasons?.[0] || 'Unusual activity detected'}</p>
+                            </div>
+                        )}
+
+                        {/* Buttons */}
+                        <div className="flex gap-3">
+                            <button
+                                onClick={() => handleApprovalResponse(false)}
+                                disabled={approvalLoading}
+                                className="flex-1 bg-red-600 hover:bg-red-500 text-white font-bold py-4 rounded-xl transition-all active:scale-95 disabled:opacity-50"
+                            >
+                                {approvalLoading ? '...' : 'Reject'}
+                            </button>
+                            <button
+                                onClick={() => handleApprovalResponse(true)}
+                                disabled={approvalLoading}
+                                className="flex-1 bg-green-600 hover:bg-green-500 text-white font-bold py-4 rounded-xl transition-all active:scale-95 disabled:opacity-50"
+                            >
+                                {approvalLoading ? '...' : 'Approve'}
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}

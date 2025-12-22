@@ -48,6 +48,20 @@ async function initDB() {
       prev_hash TEXT,
       current_hash TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS pending_verifications (
+      verification_id TEXT PRIMARY KEY,
+      token_hash TEXT,
+      wallet_binding TEXT,
+      terminal_id TEXT,
+      terminal_location TEXT,
+      claim_amount REAL,
+      risk_score INTEGER,
+      risk_reasons TEXT,
+      status TEXT DEFAULT 'PENDING',
+      created_at TEXT,
+      responded_at TEXT
+    );
   `);
 
   // Migration: Add location/risk column if it doesn't exist
