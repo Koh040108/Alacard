@@ -19,6 +19,70 @@
             "dest": "/backend/server.js"
         },
         {
+            "src": "/public-key",
+            "dest": "/backend/server.js"
+        },
+        {
+            "src": "/challenge",
+            "dest": "/backend/server.js"
+        },
+        {
+            "src": "/issue-token",
+            "dest": "/backend/server.js"
+        },
+        {
+            "src": "/verify-token",
+            "dest": "/backend/server.js"
+        },
+        {
+            "src": "/citizens",
+            "dest": "/backend/server.js"
+        },
+        {
+            "src": "/issued-tokens",
+            "dest": "/backend/server.js"
+        },
+        {
+            "src": "/audit-logs",
+            "dest": "/backend/server.js"
+        },
+        {
+            "src": "/seed",
+            "dest": "/backend/server.js"
+        },
+        {
+            "src": "/update-citizen",
+            "dest": "/backend/server.js"
+        },
+        {
+            "src": "/admin/(.*)",
+            "dest": "/backend/server.js"
+        },
+        {
+            "src": "/claim-subsidy",
+            "dest": "/backend/server.js"
+        },
+        {
+            "src": "/freeze-token",
+            "dest": "/backend/server.js"
+        },
+        {
+            "src": "/unfreeze-token",
+            "dest": "/backend/server.js"
+        },
+        {
+            "src": "/token-status",
+            "dest": "/backend/server.js"
+        },
+        {
+            "src": "/my-activity",
+            "dest": "/backend/server.js"
+        },
+        {
+            "src": "/my-balance",
+            "dest": "/backend/server.js"
+        },
+        {
             "handle": "filesystem"
         },
         {
