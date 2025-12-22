@@ -1,0 +1,51 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Citizen {
+  citizen_id         String        @id
+  income             Int?
+  eligibility_status String?
+  subsidy_quota      Float?        @default(300.00)
+  issued_tokens      IssuedToken[]
+
+  @@map("citizens")
+}
+
+model IssuedToken {
+  token_id         String   @id @default(uuid())
+  token_hash       String?
+  expiry           String?
+  issuer_signature String?
+  status           String   @default("ACTIVE")
+  citizen_id       String?
+  citizen          Citizen? @relation(fields: [citizen_id], references: [citizen_id])
+
+  @@map("issued_tokens")
+}
+
+model VerificationTerminal {
+  terminal_id String  @id
+  location    String?
+
+  @@map("verification_terminals")
+}
+
+model AuditLog {
+  audit_id       Int     @id @default(autoincrement())
+  token_hash     String?
+  terminal_id    String?
+  location       String?
+  risk_data      String?
+  timestamp      String?
+  result         String?
+  prev_hash      String?
+  current_hash   String?
+  wallet_binding String?
+
+  @@map("audit_logs")
+}

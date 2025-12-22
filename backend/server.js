@@ -1,17 +1,20 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
-const { initDB, getDB } = require('./database');
+const { initDB, getDB, prisma } = require('./database');
 const crypto = require('./crypto');
 const fraudEngine = require('./fraudEngine');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
+// CORS Configuration from environment
+const corsOrigins = process.env.CORS_ORIGINS?.split(',') || ['http://localhost:5173', 'http://localhost:3000'];
 app.use(cors({
-    origin: '*', // Allow all origins explicitly
+    origin: corsOrigins.length === 1 && corsOrigins[0] === '*' ? '*' : corsOrigins,
     methods: ['GET', 'POST', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
@@ -29,10 +32,9 @@ const issueLimiter = rateLimit({
 });
 
 // General limit for verification/challenges
-// General limit for verification/challenges
 const apiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 1000, // Increase significantly for polling
+    windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+    max: parseInt(process.env.RATE_LIMIT_MAX) || 1000,
     standardHeaders: true,
     legacyHeaders: false,
 });
@@ -121,19 +123,24 @@ initDB().then(async () => {
     loadOrGenerateKeys();
 
     // Auto-seed if citizens table is empty (for Stateless Demos)
-    const db = await getDB();
-    const count = await db.get('SELECT count(*) as count FROM citizens');
-    if (count && count.count === 0) {
+    const count = await prisma.citizen.count();
+    if (count === 0) {
         console.log('Database empty. Auto-seeding default citizens...');
-        await db.run(`INSERT INTO citizens (citizen_id, income, eligibility_status) VALUES ('CITIZEN_001', 3000, 'true')`);
-        await db.run(`INSERT INTO citizens (citizen_id, income, eligibility_status) VALUES ('CITIZEN_002', 8000, 'false')`);
-        await db.run(`INSERT INTO citizens (citizen_id, income, eligibility_status) VALUES ('CITIZEN_003', 2500, 'true')`);
+        await prisma.citizen.createMany({
+            data: [
+                { citizen_id: 'CITIZEN_001', income: 3000, eligibility_status: 'true', subsidy_quota: 300.00 },
+                { citizen_id: 'CITIZEN_002', income: 8000, eligibility_status: 'false', subsidy_quota: 300.00 },
+                { citizen_id: 'CITIZEN_003', income: 2500, eligibility_status: 'true', subsidy_quota: 300.00 },
+            ],
+        });
     }
+}).catch(err => {
+    console.error('Failed to initialize database:', err);
 });
 
-// Middleware to get DB
+// Middleware to get DB (kept for compatibility, but we use prisma directly now)
 app.use(async (req, res, next) => {
-    req.db = await getDB();
+    req.db = prisma;
     next();
 });
 
@@ -181,7 +188,9 @@ app.post('/issue-token', issueLimiter, async (req, res) => {
         return res.status(400).json({ error: 'Missing citizen_id or wallet_public_key' });
     }
 
-    const citizen = await req.db.get('SELECT * FROM citizens WHERE citizen_id = ?', [citizen_id]);
+    const citizen = await prisma.citizen.findUnique({
+        where: { citizen_id }
+    });
 
     if (!citizen) {
         return res.status(404).json({ error: 'Citizen not found' });
@@ -205,12 +214,17 @@ app.post('/issue-token', issueLimiter, async (req, res) => {
         });
 
         // Store validity in DB (optional, for revocation checks)
-        // Note: We authenticate the token via signature, but logging issuance is good practice
         const expiryMs = Date.now() + (30 * 24 * 60 * 60 * 1000);
-        await req.db.run(
-            'INSERT INTO issued_tokens (token_id, token_hash, expiry, issuer_signature, citizen_id) VALUES (?, ?, ?, ?, ?)',
-            [tokenResult.payload.jti, tokenResult.tokenHash, expiryMs, 'ECDSA_SIG', citizen_id]
-        );
+        await prisma.issuedToken.create({
+            data: {
+                token_id: tokenResult.payload.jti,
+                token_hash: tokenResult.tokenHash,
+                expiry: expiryMs.toString(),
+                issuer_signature: 'ECDSA_SIG',
+                citizen_id: citizen_id,
+                status: 'ACTIVE'
+            }
+        });
 
         res.json({
             token: tokenResult.token
@@ -274,16 +288,18 @@ app.post('/verify-token', async (req, res) => {
         if (!result.valid) return res.status(400).json({ error: result.error });
 
         // 4.5 CHECK FREEZE STATUS
-        const issuedToken = await req.db.get('SELECT status FROM issued_tokens WHERE token_hash = ?', [result.tokenHash]);
+        const issuedToken = await prisma.issuedToken.findFirst({
+            where: { token_hash: result.tokenHash }
+        });
         const wbind = result.walletBinding; // Extract Wallet Binding
 
         if (issuedToken && issuedToken.status === 'FROZEN') {
-            await logAudit(req.db, result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_FROZEN', { reason: 'Government Freeze' });
+            await logAudit(result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_FROZEN', { reason: 'Government Freeze' });
             return res.json({ status: 'BLOCKED_FROZEN', error: 'Token is Frozen by Issuer' });
         }
 
         // 5. AI RISK ANALYSIS
-        const riskAnalysis = await fraudEngine.analyzeRisk(req.db, result.tokenHash, terminalLocation, walletLocation);
+        const riskAnalysis = await fraudEngine.analyzeRisk(prisma, result.tokenHash, terminalLocation, walletLocation);
         console.log('[AI] Risk Analysis:', riskAnalysis);
 
         // BLOCK if High Risk? Or just Warner? 
@@ -293,7 +309,7 @@ app.post('/verify-token', async (req, res) => {
         else if (riskAnalysis.score > 20) finalStatus = 'WARNING';
 
         // Log & Respond
-        await logAudit(req.db, result.tokenHash, wbind, terminalId, locationStr, finalStatus, riskAnalysis);
+        await logAudit(result.tokenHash, wbind, terminalId, locationStr, finalStatus, riskAnalysis);
 
         return res.json({
             status: finalStatus,
@@ -322,16 +338,18 @@ app.post('/verify-token', async (req, res) => {
     }
 
     // CHECK FREEZE STATUS (Passive)
-    const issuedToken = await req.db.get('SELECT status FROM issued_tokens WHERE token_hash = ?', [result.tokenHash]);
+    const issuedToken = await prisma.issuedToken.findFirst({
+        where: { token_hash: result.tokenHash }
+    });
     const wbind = result.walletBinding; // Extract Wallet Binding
 
     if (issuedToken && issuedToken.status === 'FROZEN') {
-        await logAudit(req.db, result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_FROZEN', { reason: 'Government Freeze' });
+        await logAudit(result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_FROZEN', { reason: 'Government Freeze' });
         return res.json({ status: 'BLOCKED_FROZEN', error: 'Token is Frozen by Issuer' });
     }
 
     // 5. AI RISK ANALYSIS (Passive Flow)
-    const riskAnalysis = await fraudEngine.analyzeRisk(req.db, result.tokenHash, terminalLocation || {}, walletLocation); // Added walletLocation
+    const riskAnalysis = await fraudEngine.analyzeRisk(prisma, result.tokenHash, terminalLocation || {}, walletLocation);
     console.log('[AI] Risk Analysis (Passive):', riskAnalysis);
 
     let finalStatus = 'ELIGIBLE';
@@ -341,7 +359,7 @@ app.post('/verify-token', async (req, res) => {
     // Cache signature to prevent reuse logic
     signatureCache.add(pSig);
 
-    await logAudit(req.db, result.tokenHash, wbind, terminalId, locationStr, finalStatus, riskAnalysis);
+    await logAudit(result.tokenHash, wbind, terminalId, locationStr, finalStatus, riskAnalysis);
     return res.json({
         status: finalStatus,
         risk: riskAnalysis,
@@ -351,10 +369,15 @@ app.post('/verify-token', async (req, res) => {
     });
 });
 
-// Helper for Audit Logging
-async function logAudit(db, tokenHash, walletBinding, terminalId, location, resultStatus, riskAnalysis = {}) {
+// Helper for Audit Logging (Updated for Prisma)
+async function logAudit(tokenHash, walletBinding, terminalId, location, resultStatus, riskAnalysis = {}) {
     const timestamp = new Date().toISOString();
-    const lastLog = await db.get('SELECT current_hash FROM audit_logs ORDER BY audit_id DESC LIMIT 1');
+
+    // Get last audit log for hash chain
+    const lastLog = await prisma.auditLog.findFirst({
+        orderBy: { audit_id: 'desc' },
+        select: { current_hash: true }
+    });
     const prev_hash = lastLog ? lastLog.current_hash : 'GENESIS_HASH';
 
     const riskStr = JSON.stringify(riskAnalysis);
@@ -363,10 +386,19 @@ async function logAudit(db, tokenHash, walletBinding, terminalId, location, resu
     const record_data = prev_hash + tokenHash + walletBinding + terminalId + location + riskStr + timestamp + resultStatus;
     const current_hash = crypto.sha256Hex(record_data);
 
-    await db.run(
-        'INSERT INTO audit_logs (token_hash, wallet_binding, terminal_id, location, risk_data, timestamp, result, prev_hash, current_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-        [tokenHash, walletBinding, terminalId, location, riskStr, timestamp, resultStatus, prev_hash, current_hash]
-    );
+    await prisma.auditLog.create({
+        data: {
+            token_hash: tokenHash,
+            wallet_binding: walletBinding,
+            terminal_id: terminalId,
+            location: location,
+            risk_data: riskStr,
+            timestamp: timestamp,
+            result: resultStatus,
+            prev_hash: prev_hash,
+            current_hash: current_hash
+        }
+    });
 }
 
 // Signature Cache for Passive Replay Protection
@@ -383,16 +415,23 @@ const signatureCache = {
 
 // GET /audit-logs
 app.get('/audit-logs', async (req, res) => {
-    const logs = await req.db.all('SELECT * FROM audit_logs ORDER BY audit_id DESC LIMIT 50');
+    const logs = await prisma.auditLog.findMany({
+        orderBy: { audit_id: 'desc' },
+        take: 50
+    });
     res.json(logs);
 });
 
 // SEED DATA
 app.post('/seed', async (req, res) => {
-    await req.db.exec(`DELETE FROM citizens`);
-    await req.db.run(`INSERT INTO citizens (citizen_id, income, eligibility_status) VALUES ('CITIZEN_001', 3000, 'true')`);
-    await req.db.run(`INSERT INTO citizens (citizen_id, income, eligibility_status) VALUES ('CITIZEN_002', 8000, 'false')`); // High income
-    await req.db.run(`INSERT INTO citizens (citizen_id, income, eligibility_status) VALUES ('CITIZEN_003', 2500, 'true')`);
+    await prisma.citizen.deleteMany();
+    await prisma.citizen.createMany({
+        data: [
+            { citizen_id: 'CITIZEN_001', income: 3000, eligibility_status: 'true', subsidy_quota: 300.00 },
+            { citizen_id: 'CITIZEN_002', income: 8000, eligibility_status: 'false', subsidy_quota: 300.00 },
+            { citizen_id: 'CITIZEN_003', income: 2500, eligibility_status: 'true', subsidy_quota: 300.00 },
+        ],
+    });
     res.json({ message: 'Seeded' });
 });
 
@@ -401,7 +440,7 @@ app.post('/seed', async (req, res) => {
 // GET /citizens
 app.get('/citizens', async (req, res) => {
     try {
-        const citizens = await req.db.all('SELECT * FROM citizens');
+        const citizens = await prisma.citizen.findMany();
         res.json(citizens);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -414,22 +453,20 @@ app.post('/update-citizen', async (req, res) => {
     if (!citizen_id) return res.status(400).json({ error: 'Missing citizen_id' });
 
     try {
-        const exists = await req.db.get('SELECT citizen_id FROM citizens WHERE citizen_id = ?', [citizen_id]);
+        const exists = await prisma.citizen.findUnique({
+            where: { citizen_id }
+        });
         const quota = subsidy_quota !== undefined ? subsidy_quota : 300.00;
 
         if (exists) {
-            // Check if subsidy_quota was provided, else keep existing? 
-            // For simplicity, we update it if provided, or default if not exist? 
-            // Actually, best to read current if not provided. But for now let's just always update or default.
-            await req.db.run(
-                'UPDATE citizens SET income = ?, eligibility_status = ?, subsidy_quota = ? WHERE citizen_id = ?',
-                [income, eligibility_status, quota, citizen_id]
-            );
+            await prisma.citizen.update({
+                where: { citizen_id },
+                data: { income, eligibility_status, subsidy_quota: quota }
+            });
         } else {
-            await req.db.run(
-                'INSERT INTO citizens (citizen_id, income, eligibility_status, subsidy_quota) VALUES (?, ?, ?, ?)',
-                [citizen_id, income, eligibility_status, quota]
-            );
+            await prisma.citizen.create({
+                data: { citizen_id, income, eligibility_status, subsidy_quota: quota }
+            });
         }
 
         res.json({ success: true, citizen_id });
@@ -443,7 +480,9 @@ app.post('/admin/reset-quotas', async (req, res) => {
     const { amount } = req.body;
     if (!amount && amount !== 0) return res.status(400).json({ error: 'Missing amount' });
     try {
-        await req.db.run('UPDATE citizens SET subsidy_quota = ?', [amount]);
+        await prisma.citizen.updateMany({
+            data: { subsidy_quota: amount }
+        });
         res.json({ success: true, message: `All quotas reset to ${amount}` });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -460,7 +499,9 @@ app.post('/claim-subsidy', async (req, res) => {
         if (!citizen_id) {
             // Lookup via token hash
             const tokenHash = crypto.hashToken(token);
-            const issued = await req.db.get('SELECT citizen_id FROM issued_tokens WHERE token_hash = ?', [tokenHash]);
+            const issued = await prisma.issuedToken.findFirst({
+                where: { token_hash: tokenHash }
+            });
             if (issued && issued.citizen_id) {
                 citizen_id = issued.citizen_id;
             } else {
@@ -468,7 +509,9 @@ app.post('/claim-subsidy', async (req, res) => {
             }
         }
 
-        const citizen = await req.db.get('SELECT * FROM citizens WHERE citizen_id = ?', [citizen_id]);
+        const citizen = await prisma.citizen.findUnique({
+            where: { citizen_id }
+        });
         if (!citizen) return res.status(404).json({ error: 'Citizen not found' });
 
         if ((citizen.subsidy_quota || 0) < amount) {
@@ -476,11 +519,14 @@ app.post('/claim-subsidy', async (req, res) => {
         }
 
         const newBalance = (citizen.subsidy_quota || 0) - amount;
-        await req.db.run('UPDATE citizens SET subsidy_quota = ? WHERE citizen_id = ?', [newBalance, citizen_id]);
+        await prisma.citizen.update({
+            where: { citizen_id },
+            data: { subsidy_quota: newBalance }
+        });
 
         // Log it
         const wbind = crypto.parseToken(token).payload.wbind;
-        await logAudit(req.db, crypto.hashToken(token), wbind, 'PUMP_SIMULATOR', JSON.stringify({ amount, remaining: newBalance }), 'CLAIM_SUCCESS');
+        await logAudit(crypto.hashToken(token), wbind, 'PUMP_SIMULATOR', JSON.stringify({ amount, remaining: newBalance }), 'CLAIM_SUCCESS');
 
         res.json({ success: true, remaining: newBalance });
 
@@ -497,7 +543,10 @@ app.post('/freeze-token', async (req, res) => {
 
     try {
         const tokenHash = crypto.hashToken(token);
-        await req.db.run("UPDATE issued_tokens SET status = 'FROZEN' WHERE token_hash = ?", [tokenHash]);
+        await prisma.issuedToken.updateMany({
+            where: { token_hash: tokenHash },
+            data: { status: 'FROZEN' }
+        });
         res.json({ success: true, message: 'Token Frozen' });
     } catch (error) {
         console.error("Freeze Error:", error);
@@ -512,7 +561,10 @@ app.post('/unfreeze-token', async (req, res) => {
 
     try {
         const tokenHash = crypto.hashToken(token);
-        await req.db.run("UPDATE issued_tokens SET status = 'ACTIVE' WHERE token_hash = ?", [tokenHash]);
+        await prisma.issuedToken.updateMany({
+            where: { token_hash: tokenHash },
+            data: { status: 'ACTIVE' }
+        });
         res.json({ success: true, message: 'Token Activated' });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -526,7 +578,9 @@ app.post('/token-status', async (req, res) => {
 
     try {
         const tokenHash = crypto.hashToken(token);
-        const row = await req.db.get("SELECT status FROM issued_tokens WHERE token_hash = ?", [tokenHash]);
+        const row = await prisma.issuedToken.findFirst({
+            where: { token_hash: tokenHash }
+        });
         res.json({ status: row ? row.status : 'UNKNOWN' });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -536,7 +590,9 @@ app.post('/token-status', async (req, res) => {
 // GET /issued-tokens (Registry)
 app.get('/issued-tokens', async (req, res) => {
     try {
-        const tokens = await req.db.all('SELECT * FROM issued_tokens ORDER BY expiry DESC');
+        const tokens = await prisma.issuedToken.findMany({
+            orderBy: { expiry: 'desc' }
+        });
         res.json(tokens);
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -553,33 +609,37 @@ app.post('/my-activity', async (req, res) => {
         const tokenHash = crypto.hashToken(token);
 
         // 2. Find Citizen ID for this token
-        const issueRecord = await req.db.get('SELECT citizen_id FROM issued_tokens WHERE token_hash = ?', [tokenHash]);
+        const issueRecord = await prisma.issuedToken.findFirst({
+            where: { token_hash: tokenHash }
+        });
 
         if (!issueRecord || !issueRecord.citizen_id) {
             // Fallback: Use wallet binding if legacy token or no citizen link found
             const parsed = crypto.parseToken(token);
             const wbind = parsed.payload.wbind;
-            const logs = await req.db.all(
-                'SELECT * FROM audit_logs WHERE wallet_binding = ? ORDER BY timestamp DESC',
-                [wbind]
-            );
+            const logs = await prisma.auditLog.findMany({
+                where: { wallet_binding: wbind },
+                orderBy: { timestamp: 'desc' }
+            });
             return res.json(logs);
         }
 
         const citizenId = issueRecord.citizen_id;
 
         // 3. Find ALL tokens for this citizen to aggregated history across devices/sessions
-        const allTokens = await req.db.all('SELECT token_hash FROM issued_tokens WHERE citizen_id = ?', [citizenId]);
-        const allHashes = allTokens.map(t => t.token_hash);
+        const allTokens = await prisma.issuedToken.findMany({
+            where: { citizen_id: citizenId },
+            select: { token_hash: true }
+        });
+        const allHashes = allTokens.map(t => t.token_hash).filter(Boolean);
 
         if (allHashes.length === 0) return res.json([]);
 
         // 4. Fetch logs for ALL these tokens
-        const placeholders = allHashes.map(() => '?').join(',');
-        const logs = await req.db.all(
-            `SELECT * FROM audit_logs WHERE token_hash IN (${placeholders}) ORDER BY timestamp DESC`,
-            allHashes
-        );
+        const logs = await prisma.auditLog.findMany({
+            where: { token_hash: { in: allHashes } },
+            orderBy: { timestamp: 'desc' }
+        });
 
         res.json(logs);
     } catch (err) {
@@ -594,7 +654,10 @@ app.post('/my-balance', async (req, res) => {
     if (!citizen_id) return res.status(400).json({ error: 'Missing citizen_id' });
 
     try {
-        const citizen = await req.db.get('SELECT subsidy_quota FROM citizens WHERE citizen_id = ?', [citizen_id]);
+        const citizen = await prisma.citizen.findUnique({
+            where: { citizen_id },
+            select: { subsidy_quota: true }
+        });
         if (!citizen) return res.status(404).json({ error: 'Citizen not found' });
         res.json({ balance: citizen.subsidy_quota !== undefined ? citizen.subsidy_quota : 300.00 });
     } catch (e) {
@@ -606,6 +669,7 @@ app.listen(PORT, () => {
     console.log(`Backend running on http://localhost:${PORT}`);
     console.log(`- Crypto Core: ECDSA P-256 (Enabled)`);
     console.log(`- AI Fraud Engine: Enabled`);
+    console.log(`- Database: PostgreSQL (Prisma)`);
 });
 
 module.exports = app;
