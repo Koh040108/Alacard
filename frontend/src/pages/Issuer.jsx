@@ -199,13 +199,15 @@ const Issuer = () => {
                                 <tr className="border-b border-gray-700 text-gray-400 text-sm">
                                     <th className="p-2">Citizen</th>
                                     <th className="p-2">Income</th>
+                                    <th className="p-2">Eligibility</th>
                                     <th className="p-2">Token Status</th>
                                     <th className="p-2">Actions</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-800">
                                 {citizens.map(c => {
-                                    const citizenToken = tokens.find(t => t.citizen_id === c.citizen_id);
+                                    // Filter out INELIGIBLE tokens to show "No Token" state
+                                    const citizenToken = tokens.find(t => t.citizen_id === c.citizen_id && t.status !== 'INELIGIBLE');
                                     const isFrozen = citizenToken?.status === 'FROZEN';
 
                                     return (
@@ -225,6 +227,22 @@ const Issuer = () => {
                                                 ) : (
                                                     <span className={c.income < 5000 ? "text-green-400 font-bold" : "text-gray-300"}>
                                                         ${c.income}
+                                                    </span>
+                                                )}
+                                            </td>
+                                            <td className="p-2">
+                                                {editMode === c.citizen_id ? (
+                                                    <select
+                                                        className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-white text-xs"
+                                                        value={formData.eligibility_status}
+                                                        onChange={e => handleInputChange('eligibility_status', e.target.value)}
+                                                    >
+                                                        <option value="true">Eligible</option>
+                                                        <option value="false">Ineligible</option>
+                                                    </select>
+                                                ) : (
+                                                    <span className={`text-xs font-bold px-2 py-1 rounded ${c.eligibility_status === 'true' ? 'bg-indigo-500/20 text-indigo-300' : 'bg-red-500/20 text-red-400'}`}>
+                                                        {c.eligibility_status === 'true' ? 'ELIGIBLE' : 'INELIGIBLE'}
                                                     </span>
                                                 )}
                                             </td>

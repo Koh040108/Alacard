@@ -322,8 +322,8 @@ const Terminal = () => {
             </h1>
             <p className="text-[10px] text-center text-slate-500 font-mono">v1.2 - Debug Patch Loaded</p>
 
-            {/* Location Selector */}
-            <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700 flex flex-col gap-2">
+            {/* Location & Amount Selector */}
+            <div className="bg-slate-800/50 p-4 rounded-lg border border-slate-700 flex flex-col gap-4">
                 <div className="flex justify-between items-center">
                     <span className="text-gray-400 text-sm">Terminal Location:</span>
                     {location.latitude ? (
@@ -368,6 +368,7 @@ const Terminal = () => {
                         <MapPin size={18} />
                     </button>
                 </div>
+
             </div>
 
             <div className="glass-panel p-6">

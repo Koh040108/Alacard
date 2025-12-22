@@ -312,15 +312,25 @@ app.post('/verify-token', async (req, res) => {
         const riskAnalysis = await fraudEngine.analyzeRisk(prisma, result.tokenHash, terminalLocation, walletLocation);
         console.log('[AI] Risk Analysis:', riskAnalysis);
 
-        // 5. CHECK FREEZE STATUS
+        // 5. CHECK FREEZE & ELIGIBILITY STATUS
         const issuedToken = await prisma.issuedToken.findFirst({
-            where: { token_hash: result.tokenHash }
+            where: { token_hash: result.tokenHash },
+            include: { citizen: true } // Include Citizen data
         });
         const wbind = result.walletBinding; // Extract Wallet Binding
 
-        if (issuedToken && issuedToken.status === 'FROZEN') {
-            await logAudit(result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_FROZEN', riskAnalysis);
-            return res.json({ status: 'BLOCKED_FROZEN', error: 'Token is Frozen by Issuer', risk: riskAnalysis });
+        if (issuedToken) {
+            // Check for Issuer Freeze
+            if (issuedToken.status === 'FROZEN') {
+                await logAudit(result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_FROZEN', riskAnalysis);
+                return res.json({ status: 'BLOCKED_FROZEN', error: 'Token is Frozen by Issuer', risk: riskAnalysis });
+            }
+
+            // Check for Citizen Ineligibility
+            if (issuedToken.citizen && issuedToken.citizen.eligibility_status === 'false') {
+                await logAudit(result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_INELIGIBLE', { ...riskAnalysis, reason: 'Citizen marked Ineligible' });
+                return res.json({ status: 'BLOCKED_INELIGIBLE', error: 'Citizen is flagged as Ineligible', risk: riskAnalysis });
+            }
         }
 
         // BLOCK if High Risk? Or just Warner? 
@@ -362,15 +372,23 @@ app.post('/verify-token', async (req, res) => {
     const riskAnalysis = await fraudEngine.analyzeRisk(prisma, result.tokenHash, terminalLocation || {}, walletLocation);
     console.log('[AI] Risk Analysis (Passive):', riskAnalysis);
 
-    // CHECK FREEZE STATUS (Passive)
+    // CHECK FREEZE & ELIGIBILITY STATUS (Passive)
     const issuedToken = await prisma.issuedToken.findFirst({
-        where: { token_hash: result.tokenHash }
+        where: { token_hash: result.tokenHash },
+        include: { citizen: true }
     });
     const wbind = result.walletBinding; // Extract Wallet Binding
 
-    if (issuedToken && issuedToken.status === 'FROZEN') {
-        await logAudit(result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_FROZEN', riskAnalysis);
-        return res.json({ status: 'BLOCKED_FROZEN', error: 'Token is Frozen by Issuer', risk: riskAnalysis });
+    if (issuedToken) {
+        if (issuedToken.status === 'FROZEN') {
+            await logAudit(result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_FROZEN', riskAnalysis);
+            return res.json({ status: 'BLOCKED_FROZEN', error: 'Token is Frozen by Issuer', risk: riskAnalysis });
+        }
+
+        if (issuedToken.citizen && issuedToken.citizen.eligibility_status === 'false') {
+            await logAudit(result.tokenHash, wbind, terminalId, locationStr, 'BLOCKED_INELIGIBLE', { ...riskAnalysis, reason: 'Citizen marked Ineligible' });
+            return res.json({ status: 'BLOCKED_INELIGIBLE', error: 'Citizen is flagged as Ineligible', risk: riskAnalysis });
+        }
     }
 
     let finalStatus = 'ELIGIBLE';
@@ -671,16 +689,43 @@ app.post('/update-citizen', async (req, res) => {
         const exists = await prisma.citizen.findUnique({
             where: { citizen_id }
         });
-        const quota = subsidy_quota !== undefined ? subsidy_quota : 300.00;
+
+        // Ensure numeric types
+        const safeIncome = income ? parseInt(income) : 0;
+        const safeQuota = subsidy_quota !== undefined ? parseFloat(subsidy_quota) : 300.00;
 
         if (exists) {
             await prisma.citizen.update({
                 where: { citizen_id },
-                data: { income, eligibility_status, subsidy_quota: quota }
+                data: {
+                    income: safeIncome,
+                    eligibility_status: eligibility_status ? String(eligibility_status) : 'true',
+                    subsidy_quota: safeQuota
+                }
             });
         } else {
             await prisma.citizen.create({
-                data: { citizen_id, income, eligibility_status, subsidy_quota: quota }
+                data: {
+                    citizen_id,
+                    income: safeIncome,
+                    eligibility_status: eligibility_status ? String(eligibility_status) : 'true',
+                    subsidy_quota: safeQuota
+                }
+            });
+        }
+
+        // Sync Token Status with Eligibility
+        const stats = eligibility_status ? String(eligibility_status) : 'true';
+        if (stats === 'false') {
+            await prisma.issuedToken.updateMany({
+                where: { citizen_id },
+                data: { status: 'INELIGIBLE' }
+            });
+        } else {
+            // Restore to ACTIVE if eligible
+            await prisma.issuedToken.updateMany({
+                where: { citizen_id },
+                data: { status: 'ACTIVE' }
             });
         }
 
