@@ -450,12 +450,20 @@ app.post('/create-pending-verification', async (req, res) => {
         const verification_id = crypto.generateNonce(16); // 16-char random ID
         const created_at = new Date().toISOString();
 
-        await req.db.run(
-            `INSERT INTO pending_verifications 
-             (verification_id, token_hash, wallet_binding, terminal_id, terminal_location, claim_amount, risk_score, risk_reasons, status, created_at) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?)`,
-            [verification_id, token_hash, wallet_binding, terminal_id, JSON.stringify(terminal_location), claim_amount || 0, risk_score || 0, JSON.stringify(risk_reasons || []), created_at]
-        );
+        await prisma.pendingVerification.create({
+            data: {
+                verification_id,
+                token_hash,
+                wallet_binding,
+                terminal_id,
+                terminal_location: JSON.stringify(terminal_location),
+                claim_amount: claim_amount || 0,
+                risk_score: risk_score || 0,
+                risk_reasons: JSON.stringify(risk_reasons || []),
+                status: 'PENDING',
+                created_at
+            }
+        });
 
         res.json({ verification_id, status: 'PENDING', created_at });
     } catch (err) {
@@ -479,12 +487,13 @@ app.post('/my-pending-verification', async (req, res) => {
         const walletBinding = parsed.payload.wbind;
 
         // Find any pending verification for this wallet
-        const pending = await req.db.get(
-            `SELECT * FROM pending_verifications 
-             WHERE wallet_binding = ? AND status = 'PENDING' 
-             ORDER BY created_at DESC LIMIT 1`,
-            [walletBinding]
-        );
+        const pending = await prisma.pendingVerification.findFirst({
+            where: {
+                wallet_binding: walletBinding,
+                status: 'PENDING'
+            },
+            orderBy: { created_at: 'desc' }
+        });
 
         if (!pending) {
             return res.json({ pending: false });
@@ -497,10 +506,10 @@ app.post('/my-pending-verification', async (req, res) => {
 
         if (ageSeconds > 60) {
             // Auto-reject expired verifications
-            await req.db.run(
-                `UPDATE pending_verifications SET status = 'EXPIRED', responded_at = ? WHERE verification_id = ?`,
-                [now.toISOString(), pending.verification_id]
-            );
+            await prisma.pendingVerification.update({
+                where: { verification_id: pending.verification_id },
+                data: { status: 'EXPIRED', responded_at: now.toISOString() }
+            });
             return res.json({ pending: false });
         }
 
@@ -535,10 +544,9 @@ app.post('/respond-verification', async (req, res) => {
         const parsed = crypto.parseToken(token);
         const walletBinding = parsed.payload.wbind;
 
-        const pending = await req.db.get(
-            `SELECT * FROM pending_verifications WHERE verification_id = ?`,
-            [verification_id]
-        );
+        const pending = await prisma.pendingVerification.findUnique({
+            where: { verification_id }
+        });
 
         if (!pending) {
             return res.status(404).json({ error: 'Verification not found' });
@@ -556,13 +564,13 @@ app.post('/respond-verification', async (req, res) => {
         const newStatus = approved ? 'APPROVED' : 'REJECTED';
         const responded_at = new Date().toISOString();
 
-        await req.db.run(
-            `UPDATE pending_verifications SET status = ?, responded_at = ? WHERE verification_id = ?`,
-            [newStatus, responded_at, verification_id]
-        );
+        await prisma.pendingVerification.update({
+            where: { verification_id },
+            data: { status: newStatus, responded_at }
+        });
 
         // Log to audit
-        await logAudit(req.db, pending.token_hash, walletBinding, pending.terminal_id, pending.terminal_location,
+        await logAudit(prisma, pending.token_hash, walletBinding, pending.terminal_id, pending.terminal_location,
             approved ? 'USER_APPROVED' : 'USER_REJECTED', { approved, verification_id });
 
         res.json({ success: true, status: newStatus });
@@ -578,10 +586,9 @@ app.get('/verification-status/:id', async (req, res) => {
     const { id } = req.params;
 
     try {
-        const verification = await req.db.get(
-            `SELECT * FROM pending_verifications WHERE verification_id = ?`,
-            [id]
-        );
+        const verification = await prisma.pendingVerification.findUnique({
+            where: { verification_id: id }
+        });
 
         if (!verification) {
             return res.status(404).json({ error: 'Verification not found' });
@@ -595,10 +602,10 @@ app.get('/verification-status/:id', async (req, res) => {
 
             if (ageSeconds > 60) {
                 // Auto-reject
-                await req.db.run(
-                    `UPDATE pending_verifications SET status = 'EXPIRED', responded_at = ? WHERE verification_id = ?`,
-                    [now.toISOString(), id]
-                );
+                await prisma.pendingVerification.update({
+                    where: { verification_id: id },
+                    data: { status: 'EXPIRED', responded_at: now.toISOString() }
+                });
                 return res.json({ status: 'EXPIRED', message: 'User did not respond in time' });
             }
 

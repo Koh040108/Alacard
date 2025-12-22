@@ -49,3 +49,19 @@ model AuditLog {
 
   @@map("audit_logs")
 }
+
+model PendingVerification {
+  verification_id   String   @id
+  token_hash        String?
+  wallet_binding    String?
+  terminal_id       String?
+  terminal_location String?
+  claim_amount      Float?   @default(0)
+  risk_score        Float?   @default(0)
+  risk_reasons      String?
+  status            String   @default("PENDING")
+  created_at        String?
+  responded_at      String?
+
+  @@map("pending_verifications")
+}
