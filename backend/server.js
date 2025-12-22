@@ -59,13 +59,19 @@ app.use(bodyParser.json());
 // so the issuer identity remains consistent across restarts.
 // =============================================================================
 
-const KEYS_DIR = path.join(__dirname, 'keys');
+// For serverless (Vercel), use /tmp or environment variables for keys
+const isServerless = process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME;
+const KEYS_DIR = isServerless ? '/tmp/keys' : path.join(__dirname, 'keys');
 const PRIVATE_KEY_PATH = path.join(KEYS_DIR, 'issuer-private.pem');
 const PUBLIC_KEY_PATH = path.join(KEYS_DIR, 'issuer-public.pem');
 
-// Ensure keys directory exists
-if (!fs.existsSync(KEYS_DIR)) {
-    fs.mkdirSync(KEYS_DIR);
+// Ensure keys directory exists (only try if not using env vars)
+if (!process.env.ISSUER_PRIVATE_KEY && !fs.existsSync(KEYS_DIR)) {
+    try {
+        fs.mkdirSync(KEYS_DIR, { recursive: true });
+    } catch (err) {
+        console.log('Could not create keys directory (read-only fs), will use env vars');
+    }
 }
 
 let issuerKeys = null;
