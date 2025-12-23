@@ -65,3 +65,12 @@ model PendingVerification {
 
   @@map("pending_verifications")
 }
+
+model Challenge {
+  nonce      String   @id
+  timestamp  Int
+  terminalId String
+  expiresAt  Int
+
+  @@map("challenges")
+}
