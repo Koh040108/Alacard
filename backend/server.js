@@ -165,12 +165,20 @@ app.use(async (req, res, next) => {
     next();
 });
 
-// Nonce Store (In-Memory for now)
-const nonceStore = new crypto.NonceStore();
-
 // Cleanup expired nonces every minute
-setInterval(() => {
-    nonceStore.cleanup();
+setInterval(async () => {
+    try {
+        const now = Math.floor(Date.now() / 1000);
+        await prisma.challenge.deleteMany({
+            where: {
+                expiresAt: {
+                    lt: now
+                }
+            }
+        });
+    } catch (e) {
+        console.error('Failed to cleanup nonces:', e);
+    }
 }, 60 * 1000);
 
 // =============================================================================
@@ -189,14 +197,26 @@ app.get('/public-key', (req, res) => {
 
 // POST /challenge
 // Generate a nonce for the wallet to sign
-app.post('/challenge', (req, res) => {
+app.post('/challenge', async (req, res) => {
     const terminalId = req.body.terminalId || 'UNKNOWN_TERMINAL';
     const challenge = crypto.generateChallenge(terminalId);
 
-    // Store it to prevent replay later
-    nonceStore.storeChallenge(challenge.nonce, challenge);
+    try {
+        // Store in DB to persist across Vercel restarts
+        await prisma.challenge.create({
+            data: {
+                nonce: challenge.nonce,
+                timestamp: challenge.timestamp,
+                terminalId: challenge.terminalId,
+                expiresAt: challenge.expiresAt
+            }
+        });
 
-    res.json(challenge);
+        res.json(challenge);
+    } catch (e) {
+        console.error('Challenge DB Error:', e);
+        res.status(500).json({ error: 'Failed to generate challenge' });
+    }
 });
 
 // POST /issue-token
@@ -292,17 +312,33 @@ app.post('/verify-token', async (req, res) => {
     const terminalLocation = req.body.location || { state: 'Unknown' };
     const locationStr = JSON.stringify(terminalLocation);
 
-    // Check if we have an active challenge for this nonce
-    const challenge = nonceStore.getChallenge(pNonce);
+    // Check if we have an active challenge in DB
+    const dbChallenge = await prisma.challenge.findUnique({
+        where: { nonce: pNonce }
+    });
 
-    // ACTIVE FLOW (Challenge exists)
-    if (challenge) {
-        const consumed = nonceStore.consumeNonce(pNonce);
-        if (!consumed) return res.status(400).json({ error: 'Nonce already used' });
+    // ACTIVE FLOW (Challenge exists in DB)
+    if (dbChallenge) {
+        // Delete immediately to prevent replay (Consume Nonce)
+        await prisma.challenge.delete({
+            where: { nonce: pNonce }
+        });
+
+        // Convert DB object back to Challenge object for verification
+        const challenge = {
+            nonce: dbChallenge.nonce,
+            timestamp: dbChallenge.timestamp,
+            terminalId: dbChallenge.terminalId,
+            expiresAt: dbChallenge.expiresAt
+        };
+
+        if (crypto.isExpired(challenge.expiresAt)) {
+            return res.status(400).json({ error: 'Challenge expired' });
+        }
 
         const result = crypto.verifyProof({
             proof: proof,
-            challenge: challenge, // Pass the active challenge
+            challenge: challenge,
             issuerPublicKey: issuerKeys.publicKey
         });
 
